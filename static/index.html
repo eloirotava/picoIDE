@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Pico IDE</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/dracula.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/rust/rust.min.js"></script>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; background-color: #1e1e1e; color: #ccc; font-family: sans-serif; display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 1fr 300px; height: 100vh; overflow: hidden; }
+        #sidebar { grid-column: 1; grid-row: 1 / 3; background-color: #252526; border-right: 1px solid #333; display: flex; flex-direction: column; overflow: hidden; }
+        #sidebar-header { padding: 10px; background-color: #333; display: flex; justify-content: space-between; align-items: center; }
+        #root-path-input { background: #1e1e1e; color: #ccc; border: 1px solid #555; padding: 5px; width: 100%; border-radius: 3px; margin-right: 5px; outline: none; font-family: monospace;}
+        #root-path-input:focus { border-color: #0e639c; }
+        #sidebar-header button { background: none; border: none; color: #ccc; cursor: pointer; font-size: 16px; padding: 0 5px; }
+        #file-list { flex-grow: 1; overflow-y: auto; padding: 10px; }
+        .file-item { cursor: pointer; padding: 4px; border-radius: 3px; user-select: none; white-space: nowrap; }
+        .file-item:hover { background-color: #37373d; }
+        .is-dir { font-weight: bold; color: #d7ba7d; }
+        .folder-children { border-left: 1px solid #444; margin-left: 10px; padding-left: 5px; }
+        #editor-container { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; }
+        #top-bar { background-color: #333; padding: 5px 15px; display: flex; justify-content: space-between; align-items: center; }
+        #btn-salvar { background: #0e639c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; transition: background 0.3s ease; }
+        .CodeMirror { flex-grow: 1; height: 100%; font-size: 16px; }
+        #terminal-container { grid-column: 2; grid-row: 2; background-color: #000; border-top: 1px solid #333; padding: 10px; overflow: hidden; box-sizing: border-box; }
+        .terminal { height: 100%; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <input type="text" id="root-path-input" value="/" title="Digite a pasta e aperte Enter">
+            <button onclick="mudarRaiz()" title="Atualizar">🔄</button>
+        </div>
+        <div id="file-list">Carregando...</div>
+    </div>
+
+    <div id="editor-container">
+        <div id="top-bar">
+            <span id="current-file">Nenhum arquivo aberto</span>
+            <button id="btn-salvar" onclick="salvarArquivo()">Salvar (Ctrl+S)</button>
+        </div>
+        <textarea id="editor"></textarea>
+    </div>
+
+    <div id="terminal-container"></div>
+
+    <script>
+        // --- EDITOR E AUTOSAVE ---
+        const editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
+            lineNumbers: true, theme: "dracula", mode: "javascript"
+        });
+
+        let arquivoAtual = "";
+        let timeoutAutosave = null;
+        let bloqueiaAutosaveInicial = true; 
+
+        editor.on("change", () => {
+            if (!arquivoAtual || bloqueiaAutosaveInicial) return;
+            const btnSalvar = document.getElementById("btn-salvar");
+            btnSalvar.textContent = "Modificado...";
+            btnSalvar.style.background = "#c77200"; 
+            
+            clearTimeout(timeoutAutosave);
+            timeoutAutosave = setTimeout(() => { salvarArquivo(true); }, 5000);
+        });
+
+        document.addEventListener("keydown", function(e) {
+            if ((window.navigator.platform.match("Mac") ? e.metaKey : e.ctrlKey)  && e.keyCode == 83) {
+                e.preventDefault(); 
+                clearTimeout(timeoutAutosave);
+                salvarArquivo(false);
+            }
+        }, false);
+
+        // --- SISTEMA DE ARQUIVOS COM AUTO-UPDATE ---
+        
+        // Memória inteligente: guarda os caminhos das pastas que você abriu
+        const pastasAbertas = new Set();
+
+        function mudarRaiz() {
+            const novoCaminho = document.getElementById('root-path-input').value;
+            carregarArquivos(novoCaminho, document.getElementById('file-list'));
+        }
+
+        document.getElementById('root-path-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') mudarRaiz();
+        });
+
+        async function carregarArquivos(caminho, elementoPai) {
+            // Evita o texto "Carregando" na raiz para não piscar a tela no auto-update
+            if (elementoPai.id === 'file-list' && elementoPai.innerHTML === '') {
+                elementoPai.innerHTML = 'Carregando...';
+            }
+            
+            const res = await fetch(`/api/files?path=${encodeURIComponent(caminho)}`);
+            const files = await res.json();
+            
+            // Fragmento de documento permite montar a árvore na memória antes de jogar na tela (zero flicker)
+            const fragment = document.createDocumentFragment();
+
+            files.forEach(f => {
+                const div = document.createElement('div');
+                div.className = 'file-item ' + (f.is_dir ? 'is-dir' : '');
+                const header = document.createElement('div');
+                div.appendChild(header);
+
+                if (f.is_dir) {
+                    const childrenContainer = document.createElement('div');
+                    childrenContainer.className = 'folder-children';
+                    
+                    // Verifica se a pasta estava na memória de abertas
+                    const isOpen = pastasAbertas.has(f.path);
+                    header.textContent = (isOpen ? '📂 ' : '📁 ') + f.name;
+                    childrenContainer.style.display = isOpen ? 'block' : 'none';
+                    
+                    div.appendChild(childrenContainer);
+
+                    header.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (childrenContainer.style.display === 'none') {
+                            header.textContent = '📂 ' + f.name;
+                            childrenContainer.style.display = 'block';
+                            pastasAbertas.add(f.path);
+                            await carregarArquivos(f.path, childrenContainer);
+                        } else {
+                            header.textContent = '📁 ' + f.name;
+                            childrenContainer.style.display = 'none';
+                            pastasAbertas.delete(f.path);
+                            childrenContainer.innerHTML = '';
+                        }
+                    };
+
+                    // Se a pasta já estava aberta antes do refresh, busca os filhos dela silenciosamente
+                    if (isOpen) {
+                        carregarArquivos(f.path, childrenContainer);
+                    }
+                } else {
+                    header.textContent = '📄 ' + f.name;
+                    header.onclick = (e) => { e.stopPropagation(); abrirArquivo(f.path, f.name); };
+                }
+                fragment.appendChild(div);
+            });
+
+            elementoPai.innerHTML = '';
+            elementoPai.appendChild(fragment);
+        }
+
+        async function abrirArquivo(caminho, nome) {
+            bloqueiaAutosaveInicial = true; 
+            clearTimeout(timeoutAutosave);
+            
+            arquivoAtual = caminho;
+            document.getElementById('current-file').textContent = nome;
+            
+            const btnSalvar = document.getElementById("btn-salvar");
+            btnSalvar.textContent = "Salvar (Ctrl+S)";
+            btnSalvar.style.background = "#0e639c"; 
+
+            const res = await fetch(`/api/read?path=${encodeURIComponent(caminho)}`);
+            const texto = await res.text();
+            
+            if(nome.endsWith('.rs')) editor.setOption("mode", "rust");
+            else if(nome.endsWith('.html')) editor.setOption("mode", "htmlmixed");
+            else if(nome.endsWith('.toml')) editor.setOption("mode", "toml");
+            else editor.setOption("mode", "javascript");
+            
+            editor.setValue(texto);
+            setTimeout(() => { bloqueiaAutosaveInicial = false; }, 100);
+        }
+
+        async function salvarArquivo(isAuto = false) {
+            if (!arquivoAtual) return;
+            
+            const btnSalvar = document.getElementById("btn-salvar");
+            btnSalvar.textContent = isAuto ? "Autosalvando..." : "Salvando...";
+            
+            await fetch('/api/save', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: arquivoAtual, content: editor.getValue() })
+            });
+
+            btnSalvar.textContent = "Salvo!";
+            btnSalvar.style.background = "#2a7522"; 
+            
+            // Dispara um refresh silencioso da árvore ao salvar
+            mudarRaiz();
+            
+            setTimeout(() => {
+                if (btnSalvar.textContent === "Salvo!") {
+                    btnSalvar.textContent = "Salvar (Ctrl+S)";
+                    btnSalvar.style.background = "#0e639c"; 
+                }
+            }, 2000);
+        }
+
+        // --- GATILHOS DE AUTO-UPDATE ---
+        
+        // Gatilho 1: Início
+        mudarRaiz(); 
+
+        // Gatilho 2: Atualização silenciosa a cada 10 segundos, mas apenas se você estiver com a tela ativa
+        setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                mudarRaiz();
+            }
+        }, 10000);
+
+        // --- TERMINAL ---
+        const term = new Terminal({ 
+            theme: { background: '#000' }, fontFamily: 'monospace', fontSize: 14, cursorBlink: true 
+        });
+        
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal-container'));
+        fitAddon.fit();
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/api/ws`;
+        const ws = new WebSocket(wsUrl);
+
+        function sincronizarTamanhoTerminal() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+            }
+        }
+
+        ws.onopen = () => { 
+            term.write('\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n'); 
+            fitAddon.fit();
+            sincronizarTamanhoTerminal();
+        };
+
+        ws.onmessage = (evt) => {
+            if (evt.data instanceof Blob) {
+                evt.data.arrayBuffer().then(buf => term.write(new Uint8Array(buf)));
+            } else if (evt.data instanceof ArrayBuffer) {
+                term.write(new Uint8Array(evt.data));
+            } else {
+                term.write(evt.data);
+            }
+        };
+
+        term.onData(data => { 
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "input", data: data }));
+                
+                // Gatilho 3: Se o usuário apertar Enter (\r) no terminal, aguarda meio segundo para
+                // dar tempo do comando do Linux terminar, e atualiza a árvore de arquivos.
+                if (data.includes('\r')) {
+                    setTimeout(mudarRaiz, 500);
+                }
+            } 
+        });
+
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+            sincronizarTamanhoTerminal();
+        });
+
+        setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "ping" }));
+            }
+        }, 30000);
+    </script>
+</body>
+</html>
