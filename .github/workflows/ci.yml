@@ -32,8 +32,10 @@ jobs:
 
       - name: Instala as dependências dos testes
         run: |
-          pip install -r tests/e2e/requirements.txt
-          playwright install --with-deps chromium
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r tests/e2e/requirements.txt
+          # Via "python3 -m" para não depender do script console estar no PATH.
+          python3 -m playwright install --with-deps chromium
 
       - name: Roda a suíte
         run: ./tests/e2e/run.sh
