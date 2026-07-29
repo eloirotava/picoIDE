@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ALVO: armv7-unknown-linux-musleabihf
+
+jobs:
+  testes:
+    name: Testes de ponta a ponta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: testes
+
+      - name: Compila para a máquina do runner
+        run: cargo build
+
+      - name: Instala as dependências dos testes
+        run: |
+          pip install -r tests/e2e/requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Roda a suíte
+        run: ./tests/e2e/run.sh
+
+  build:
+    name: Executável armhf estático
+    runs-on: ubuntu-latest
+    # musl já linka estático por padrão, e rust-lld dispensa instalar um
+    # toolchain de cross-compilação C, porque o projeto é Rust puro.
+    env:
+      RUSTFLAGS: -C linker=rust-lld -C strip=symbols
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instala o Rust com o alvo armhf
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.ALVO }}
+
+      - name: Compila
+        run: cargo build --release --target "$ALVO"
+
+      - name: Confere que saiu estático e ARMv7 hard-float
+        run: |
+          BIN="target/$ALVO/release/meu-mini-ide"
+          file "$BIN"
+          readelf -A "$BIN" | grep -E 'Tag_CPU_arch:|Tag_ABI_VFP_args:'
+
+          # Um binário dinâmico rodaria em quem tem as libs certas e falharia na
+          # placa, então isso precisa ser um erro duro e não um aviso.
+          if readelf -d "$BIN" 2>/dev/null | grep -q NEEDED; then
+            echo "::error::O binário ficou dinâmico (tem dependências NEEDED)."
+            exit 1
+          fi
+          if ! file "$BIN" | grep -q "ARM"; then
+            echo "::error::O binário não é ARM."
+            exit 1
+          fi
+          if ! readelf -A "$BIN" | grep -q "Tag_ABI_VFP_args: VFP registers"; then
+            echo "::error::O binário não é hard-float (armhf)."
+            exit 1
+          fi
+
+          cp "$BIN" picoide-armhf
+
+      - name: Sobe o binário sob emulação ARM e testa
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+
+          qemu-arm-static ./picoide-armhf &
+          SERVIDOR=$!
+
+          subiu=0
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:8080/; then subiu=1; break; fi
+            sleep 1
+          done
+
+          if [ "$subiu" != "1" ]; then
+            echo "::error::O binário armhf não respondeu na porta 8080."
+            kill $SERVIDOR 2>/dev/null || true
+            exit 1
+          fi
+          echo "A página abriu."
+
+          if ! curl -sf "http://127.0.0.1:8080/api/files?path=/" | grep -q '"is_dir"'; then
+            echo "::error::/api/files não devolveu a listagem esperada."
+            kill $SERVIDOR 2>/dev/null || true
+            exit 1
+          fi
+          echo "A API de arquivos respondeu."
+
+          kill $SERVIDOR 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: picoide-armhf
+          path: picoide-armhf
+          if-no-files-found: error
+
+  release:
+    name: Publica a release
+    # Só publica binário que passou nos testes e rodou sob emulação ARM.
+    needs: [testes, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: picoide-armhf
+
+      - name: Gera o checksum
+        run: sha256sum picoide-armhf > picoide-armhf.sha256
+
+      - name: Cria a release com o binário anexado
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notas.md <<NOTAS
+          Binário estático para ARMv7 hard-float (musl). Não precisa instalar
+          nada na placa: o HTML da interface vai embutido no executável.
+
+          ## Instalando no Banana Pi
+
+          \`\`\`sh
+          chmod +x picoide-armhf
+          ./picoide-armhf
+          \`\`\`
+
+          Depois abra \`http://IP-DA-PLACA:8080\`.
+
+          ## Conferindo o download
+
+          \`\`\`sh
+          sha256sum -c picoide-armhf.sha256
+          \`\`\`
+
+          ## Mudanças
+
+          https://github.com/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME
+          NOTAS
+
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "picoIDE $GITHUB_REF_NAME" \
+            --notes-file notas.md \
+            picoide-armhf picoide-armhf.sha256

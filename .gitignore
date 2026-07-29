@@ -1,1 +1,3 @@
 /target
+tests/e2e/vendor/
+__pycache__/
