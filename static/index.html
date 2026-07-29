@@ -7,8 +7,16 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/dracula.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+    <!-- O modo rust usa defineSimpleMode, que vem neste addon: sem ele o
+         realce de .rs quebra silenciosamente. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/mode/simple.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/rust/rust.min.js"></script>
+    <!-- htmlmixed depende de xml + css + javascript -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/css/css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/htmlmixed/htmlmixed.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/toml/toml.min.js"></script>
 
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
@@ -55,6 +63,26 @@
     <div id="terminal-container"></div>
 
     <script>
+        // --- MEMÓRIA DE SESSÃO (sobrevive ao F5) ---
+        const CHAVES = {
+            raiz: 'picoide.rootPath',
+            pastas: 'picoide.openFolders',
+            arquivo: 'picoide.currentFile'
+        };
+
+        function lerMemoria(chave, padrao) {
+            try {
+                const bruto = localStorage.getItem(chave);
+                return bruto === null ? padrao : JSON.parse(bruto);
+            } catch (e) {
+                return padrao;
+            }
+        }
+
+        function gravarMemoria(chave, valor) {
+            try { localStorage.setItem(chave, JSON.stringify(valor)); } catch (e) { /* modo privado */ }
+        }
+
         // --- EDITOR E AUTOSAVE ---
         const editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
             lineNumbers: true, theme: "dracula", mode: "javascript"
@@ -83,16 +111,25 @@
         }, false);
 
         // --- SISTEMA DE ARQUIVOS COM AUTO-UPDATE ---
-        
+
         // Memória inteligente: guarda os caminhos das pastas que você abriu
-        const pastasAbertas = new Set();
+        const pastasAbertas = new Set(lerMemoria(CHAVES.pastas, []));
+        const inputRaiz = document.getElementById('root-path-input');
+
+        // Restaura a pasta da última visita antes do primeiro carregamento
+        inputRaiz.value = lerMemoria(CHAVES.raiz, '/') || '/';
+
+        function salvarPastasAbertas() {
+            gravarMemoria(CHAVES.pastas, Array.from(pastasAbertas));
+        }
 
         function mudarRaiz() {
-            const novoCaminho = document.getElementById('root-path-input').value;
+            const novoCaminho = inputRaiz.value;
+            gravarMemoria(CHAVES.raiz, novoCaminho);
             carregarArquivos(novoCaminho, document.getElementById('file-list'));
         }
 
-        document.getElementById('root-path-input').addEventListener('keypress', function (e) {
+        inputRaiz.addEventListener('keypress', function (e) {
             if (e.key === 'Enter') mudarRaiz();
         });
 
@@ -131,11 +168,13 @@
                             header.textContent = '📂 ' + f.name;
                             childrenContainer.style.display = 'block';
                             pastasAbertas.add(f.path);
+                            salvarPastasAbertas();
                             await carregarArquivos(f.path, childrenContainer);
                         } else {
                             header.textContent = '📁 ' + f.name;
                             childrenContainer.style.display = 'none';
                             pastasAbertas.delete(f.path);
+                            salvarPastasAbertas();
                             childrenContainer.innerHTML = '';
                         }
                     };
@@ -156,19 +195,27 @@
         }
 
         async function abrirArquivo(caminho, nome) {
-            bloqueiaAutosaveInicial = true; 
+            bloqueiaAutosaveInicial = true;
             clearTimeout(timeoutAutosave);
-            
-            arquivoAtual = caminho;
-            document.getElementById('current-file').textContent = nome;
-            
-            const btnSalvar = document.getElementById("btn-salvar");
-            btnSalvar.textContent = "Salvar (Ctrl+S)";
-            btnSalvar.style.background = "#0e639c"; 
 
             const res = await fetch(`/api/read?path=${encodeURIComponent(caminho)}`);
+            if (!res.ok) {
+                // Arquivo sumiu: não assume ele como atual, senão o autosave o recriaria.
+                document.getElementById('current-file').textContent = `${nome} (não encontrado)`;
+                arquivoAtual = "";
+                gravarMemoria(CHAVES.arquivo, null);
+                return;
+            }
             const texto = await res.text();
-            
+
+            arquivoAtual = caminho;
+            gravarMemoria(CHAVES.arquivo, { path: caminho, name: nome });
+            document.getElementById('current-file').textContent = nome;
+
+            const btnSalvar = document.getElementById("btn-salvar");
+            btnSalvar.textContent = "Salvar (Ctrl+S)";
+            btnSalvar.style.background = "#0e639c";
+
             if(nome.endsWith('.rs')) editor.setOption("mode", "rust");
             else if(nome.endsWith('.html')) editor.setOption("mode", "htmlmixed");
             else if(nome.endsWith('.toml')) editor.setOption("mode", "toml");
@@ -205,8 +252,14 @@
 
         // --- GATILHOS DE AUTO-UPDATE ---
         
-        // Gatilho 1: Início
-        mudarRaiz(); 
+        // Gatilho 1: Início — já na pasta que estava aberta antes do F5
+        mudarRaiz();
+
+        // Reabre o arquivo em que você estava trabalhando
+        const ultimoArquivo = lerMemoria(CHAVES.arquivo, null);
+        if (ultimoArquivo && ultimoArquivo.path) {
+            abrirArquivo(ultimoArquivo.path, ultimoArquivo.name);
+        }
 
         // Gatilho 2: Atualização silenciosa a cada 10 segundos, mas apenas se você estiver com a tela ativa
         setInterval(() => {
@@ -225,42 +278,77 @@
         term.open(document.getElementById('terminal-container'));
         fitAddon.fit();
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/api/ws`;
-        const ws = new WebSocket(wsUrl);
+        let ws = null;
+        let tentativasReconexao = 0;
+        let shellEncerrado = false;
 
         function sincronizarTamanhoTerminal() {
-            if (ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
             }
         }
 
-        ws.onopen = () => { 
-            term.write('\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n'); 
-            fitAddon.fit();
-            sincronizarTamanhoTerminal();
-        };
+        function conectarTerminal() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            // Manda a pasta atual para o shell nascer nela, e não na raiz.
+            const cwd = encodeURIComponent(inputRaiz.value || '/');
+            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?cwd=${cwd}`);
 
-        ws.onmessage = (evt) => {
-            if (evt.data instanceof Blob) {
-                evt.data.arrayBuffer().then(buf => term.write(new Uint8Array(buf)));
-            } else if (evt.data instanceof ArrayBuffer) {
-                term.write(new Uint8Array(evt.data));
-            } else {
-                term.write(evt.data);
+            ws.onopen = () => {
+                const mensagem = tentativasReconexao > 0
+                    ? '\r\n\x1b[32m[Pico IDE] Reconectado.\x1b[0m\r\n'
+                    : '\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n';
+                tentativasReconexao = 0;
+                shellEncerrado = false;
+                term.write(mensagem);
+                fitAddon.fit();
+                sincronizarTamanhoTerminal();
+            };
+
+            ws.onmessage = (evt) => {
+                if (evt.data instanceof Blob) {
+                    evt.data.arrayBuffer().then(buf => term.write(new Uint8Array(buf)));
+                } else if (evt.data instanceof ArrayBuffer) {
+                    term.write(new Uint8Array(evt.data));
+                } else {
+                    term.write(evt.data);
+                }
+            };
+
+            ws.onclose = (evt) => {
+                // Fechamento limpo = o shell terminou (exit / Ctrl+D). Nesse caso
+                // reconectar sozinho só abriria um shell novo sem você pedir.
+                if (evt.wasClean) {
+                    shellEncerrado = true;
+                    term.write('\r\n\x1b[33m[Pico IDE] Sessão encerrada. Aperte Enter para abrir um shell novo.\x1b[0m\r\n');
+                    return;
+                }
+                // Queda de rede: volta sozinho, com espera crescente até 10s.
+                const espera = Math.min(1000 * Math.pow(2, tentativasReconexao), 10000);
+                tentativasReconexao++;
+                term.write(`\r\n\x1b[31m[Pico IDE] Conexão perdida. Reconectando em ${espera / 1000}s...\x1b[0m\r\n`);
+                setTimeout(conectarTerminal, espera);
+            };
+        }
+
+        conectarTerminal();
+
+        term.onData(data => {
+            if (shellEncerrado) {
+                // Enter (ou qualquer tecla) reabre a sessão sob demanda.
+                shellEncerrado = false;
+                conectarTerminal();
+                return;
             }
-        };
-
-        term.onData(data => { 
-            if (ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "input", data: data }));
-                
+
                 // Gatilho 3: Se o usuário apertar Enter (\r) no terminal, aguarda meio segundo para
                 // dar tempo do comando do Linux terminar, e atualiza a árvore de arquivos.
                 if (data.includes('\r')) {
                     setTimeout(mudarRaiz, 500);
                 }
-            } 
+            }
         });
 
         window.addEventListener('resize', () => {
@@ -268,8 +356,9 @@
             sincronizarTamanhoTerminal();
         });
 
+        // Tráfego do lado do navegador; o servidor manda os Pings do lado dele.
         setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "ping" }));
             }
         }, 30000);
