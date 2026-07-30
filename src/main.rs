@@ -1,10 +1,10 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query,
+        Path as ParamCaminho, Query,
     },
-    http::StatusCode,
-    response::Html,
+    http::{header, StatusCode},
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
@@ -52,6 +52,7 @@ async fn main() {
     let app = Router::new()
         // Servindo o HTML direto da memória RAM!
         .route("/", get(serve_index))
+        .route("/vendor/*caminho", get(serve_vendor))
         .route("/api/files", get(list_files))
         .route("/api/read", get(read_file))
         .route("/api/save", post(save_file))
@@ -70,6 +71,45 @@ async fn main() {
 // O include_str! injeta o conteúdo do index.html dentro do executável no momento da compilação.
 async fn serve_index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
+}
+
+// --- LIBS DA INTERFACE ---
+// CodeMirror e xterm.js também vão embutidos, e não buscados em CDN: a placa
+// pode não ter internet, e nesse caso o editor e o terminal simplesmente não
+// carregariam. Para trocar de versão, veja static/vendor/atualizar.sh.
+const JS: &str = "application/javascript; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
+
+// Uma hora é curto o bastante para uma troca de versão aparecer sozinha (os
+// caminhos não têm hash), e longo o bastante para o F5 não rebaixar ~900 KB.
+const CACHE_ASSETS: &str = "public, max-age=3600";
+
+const ASSETS: &[(&str, &str, &[u8])] = &[
+    ("codemirror/lib/codemirror.js", JS, include_bytes!("../static/vendor/codemirror/lib/codemirror.js")),
+    ("codemirror/lib/codemirror.css", CSS, include_bytes!("../static/vendor/codemirror/lib/codemirror.css")),
+    ("codemirror/theme/dracula.css", CSS, include_bytes!("../static/vendor/codemirror/theme/dracula.css")),
+    ("codemirror/addon/mode/simple.js", JS, include_bytes!("../static/vendor/codemirror/addon/mode/simple.js")),
+    ("codemirror/mode/javascript/javascript.js", JS, include_bytes!("../static/vendor/codemirror/mode/javascript/javascript.js")),
+    ("codemirror/mode/rust/rust.js", JS, include_bytes!("../static/vendor/codemirror/mode/rust/rust.js")),
+    ("codemirror/mode/xml/xml.js", JS, include_bytes!("../static/vendor/codemirror/mode/xml/xml.js")),
+    ("codemirror/mode/css/css.js", JS, include_bytes!("../static/vendor/codemirror/mode/css/css.js")),
+    ("codemirror/mode/htmlmixed/htmlmixed.js", JS, include_bytes!("../static/vendor/codemirror/mode/htmlmixed/htmlmixed.js")),
+    ("codemirror/mode/toml/toml.js", JS, include_bytes!("../static/vendor/codemirror/mode/toml/toml.js")),
+    ("xterm/lib/xterm.js", JS, include_bytes!("../static/vendor/xterm/lib/xterm.js")),
+    ("xterm/css/xterm.css", CSS, include_bytes!("../static/vendor/xterm/css/xterm.css")),
+    ("xterm-addon-fit/lib/xterm-addon-fit.js", JS, include_bytes!("../static/vendor/xterm-addon-fit/lib/xterm-addon-fit.js")),
+];
+
+async fn serve_vendor(ParamCaminho(caminho): ParamCaminho<String>) -> Result<impl IntoResponse, StatusCode> {
+    let (_, tipo, corpo) = ASSETS
+        .iter()
+        .find(|(nome, _, _)| *nome == caminho)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok((
+        [(header::CONTENT_TYPE, *tipo), (header::CACHE_CONTROL, CACHE_ASSETS)],
+        *corpo,
+    ))
 }
 
 // --- TERMINAL ---

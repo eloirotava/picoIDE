@@ -8,46 +8,27 @@ import subprocess
 import time
 
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
-VENDOR = pathlib.Path(__file__).resolve().parent / "vendor"
 BINARIO = os.environ.get("PICOIDE_BIN", str(RAIZ / "target" / "debug" / "meu-mini-ide"))
 URL = os.environ.get("PICOIDE_URL", "http://127.0.0.1:8080")
 PORTA = 8080
 
-# O index.html busca as libs em CDN. Nos testes servimos as mesmas versões a
-# partir de tests/e2e/vendor (populado pelo vendor.sh), para o resultado não
-# depender da rede nem de um CDN fora do ar.
-ASSETS = {
-    "**/codemirror.min.css": ("codemirror/lib/codemirror.css", "text/css"),
-    "**/theme/dracula.min.css": ("codemirror/theme/dracula.css", "text/css"),
-    "**/codemirror.min.js": ("codemirror/lib/codemirror.js", "application/javascript"),
-    "**/addon/mode/simple.min.js": ("codemirror/addon/mode/simple.js", "application/javascript"),
-    "**/javascript.min.js": ("codemirror/mode/javascript/javascript.js", "application/javascript"),
-    "**/rust.min.js": ("codemirror/mode/rust/rust.js", "application/javascript"),
-    "**/mode/xml/xml.min.js": ("codemirror/mode/xml/xml.js", "application/javascript"),
-    "**/mode/css/css.min.js": ("codemirror/mode/css/css.js", "application/javascript"),
-    "**/htmlmixed.min.js": ("codemirror/mode/htmlmixed/htmlmixed.js", "application/javascript"),
-    "**/toml.min.js": ("codemirror/mode/toml/toml.js", "application/javascript"),
-    "**/css/xterm.css": ("xterm/css/xterm.css", "text/css"),
-    "**/lib/xterm.js": ("xterm/lib/xterm.js", "application/javascript"),
-    "**/xterm-addon-fit.js": ("xterm-addon-fit/lib/xterm-addon-fit.js", "application/javascript"),
-}
 
+def exigir_offline(page, externas):
+    """Corta todo request que não seja para o próprio servidor.
 
-def instalar_rotas(page):
-    faltando = [str(VENDOR / rel) for rel, _ in ASSETS.values()
-                if not (VENDOR / rel).is_file()]
-    if faltando:
-        raise SystemExit(
-            "Faltam as libs de teste. Rode tests/e2e/vendor.sh primeiro.\n"
-            "Ausente: " + faltando[0])
+    A placa pode não ter internet, então a interface tem de se sustentar só com
+    o que vem embutido no executável. Bloquear em vez de deixar passar é o que
+    faz um `<script src="https://cdn...">` reintroduzido virar teste vermelho,
+    e não um sucesso que só falha na placa do usuário.
+    """
+    def handler(route, request):
+        if request.url.startswith(URL):
+            route.continue_()
+        else:
+            externas.append(request.url)
+            route.abort()
 
-    def fabrica(caminho, tipo):
-        def handler(route):
-            route.fulfill(status=200, body=caminho.read_bytes(), content_type=tipo)
-        return handler
-
-    for padrao, (rel, tipo) in ASSETS.items():
-        page.route(padrao, fabrica(VENDOR / rel, tipo))
+    page.route("**/*", handler)
 
 
 def abrir_navegador(pw):

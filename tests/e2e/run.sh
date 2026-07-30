@@ -4,8 +4,6 @@ set -uo pipefail
 
 cd "$(dirname "$0")"
 
-./vendor.sh
-
 if [ ! -f "${PICOIDE_BIN:-../../target/debug/meu-mini-ide}" ]; then
   echo "Compilando primeiro..."
   (cd ../.. && cargo build)

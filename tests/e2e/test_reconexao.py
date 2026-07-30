@@ -10,7 +10,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 from helpers import (URL, abrir_navegador, derrubar_servidor, digitar,
-                     instalar_rotas, ler_terminal, relatar, subir_servidor)
+                     exigir_offline, ler_terminal, relatar, subir_servidor)
 
 
 def esperar_no_terminal(page, texto, tentativas=20, intervalo=1500):
@@ -26,7 +26,8 @@ def run(pw):
     servidor = subir_servidor()
     navegador = abrir_navegador(pw)
     page = navegador.new_page()
-    instalar_rotas(page)
+    externas = []
+    exigir_offline(page, externas)
     page.goto(URL)
     page.wait_for_selector("#file-list .file-item", timeout=20000)
     page.wait_for_timeout(1500)
@@ -67,6 +68,9 @@ def run(pw):
     page.wait_for_timeout(3000)
     if "SESSAO_NOVA" not in ler_terminal(page):
         falhas.append(f"não reabriu a sessão sob demanda:\n{ler_terminal(page)[-500:]}")
+
+    if externas:
+        falhas.append(f"a página buscou recurso fora do servidor: {externas}")
 
     navegador.close()
     derrubar_servidor(servidor)

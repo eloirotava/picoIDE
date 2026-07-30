@@ -113,6 +113,17 @@ jobs:
           fi
           echo "A API de arquivos respondeu."
 
+          # A interface só abre sem internet se as libs saírem do próprio
+          # binário, então conferimos no executável que vai para a placa.
+          for asset in $(grep -oE '/vendor/[A-Za-z0-9./_-]+' static/index.html | sort -u); do
+            if ! curl -sf -o /dev/null "http://127.0.0.1:8080$asset"; then
+              echo "::error::O binário não serviu $asset."
+              kill $SERVIDOR 2>/dev/null || true
+              exit 1
+            fi
+          done
+          echo "As libs embutidas responderam."
+
           kill $SERVIDOR 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
@@ -143,7 +154,8 @@ jobs:
         run: |
           cat > notas.md <<NOTAS
           Binário estático para ARMv7 hard-float (musl). Não precisa instalar
-          nada na placa: o HTML da interface vai embutido no executável.
+          nada na placa, nem a placa precisa de internet: o HTML da interface e
+          as libs de frontend vão embutidos no executável.
 
           ## Instalando no Banana Pi
 

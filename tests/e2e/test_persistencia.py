@@ -6,7 +6,7 @@ voltou: pasta, árvore, arquivo, conteúdo no editor e a pasta do terminal.
 
 from playwright.sync_api import sync_playwright
 
-from helpers import (RAIZ, URL, abrir_navegador, digitar, instalar_rotas,
+from helpers import (RAIZ, URL, abrir_navegador, digitar, exigir_offline,
                      ler_terminal, relatar, servidor)
 
 PASTA = str(RAIZ)
@@ -17,7 +17,8 @@ def run(pw):
     page = navegador.new_page()
     erros = []
     page.on("pageerror", lambda e: erros.append(str(e)))
-    instalar_rotas(page)
+    externas = []
+    exigir_offline(page, externas)
 
     page.goto(URL)
     page.wait_for_selector("#file-list .file-item", timeout=20000)
@@ -75,6 +76,8 @@ def run(pw):
         falhas.append(f"o terminal não abriu na pasta salva:\n{terminal[-400:]}")
     if erros:
         falhas.append(f"erros de JS na página: {erros}")
+    if externas:
+        falhas.append(f"a página buscou recurso fora do servidor: {externas}")
 
     navegador.close()
     relatar(falhas, "a sessão sobrevive ao reload")

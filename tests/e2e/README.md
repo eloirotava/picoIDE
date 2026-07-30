@@ -17,14 +17,16 @@ playwright install chromium
 ./run.sh
 ```
 
-O `run.sh` compila o binário se precisar, baixa as libs de frontend e roda os
-três testes em sequência.
+O `run.sh` compila o binário se precisar e roda os três testes em sequência.
 
 ## Detalhes que importam
 
-O `index.html` busca CodeMirror e xterm.js em CDN. Os testes servem essas
-mesmas versões a partir de `vendor/` (populado pelo `vendor.sh` a partir do
-npm), para o resultado não depender de CDN.
+Os testes de navegador bloqueiam todo request que não vá para o próprio
+servidor (`exigir_offline`, em `helpers.py`) e falham se algum acontecer. Como
+CodeMirror e xterm.js vêm embutidos no binário (`static/vendor`), a interface
+tem de carregar inteira sem rede — é assim que um `<script src="https://cdn…">`
+reintroduzido vira teste vermelho aqui, em vez de uma falha que só aparece na
+placa do usuário.
 
 O servidor escuta em `127.0.0.1:8080` fixo, então os testes rodam em sequência,
 cada um subindo e derrubando a própria instância.

@@ -1,9 +1,10 @@
 # picoIDE
 
 IDE mínima que roda direto na placa: editor com realce de sintaxe, árvore de
-arquivos e um terminal real, servidos por um único executável. O `index.html`
-vai embutido no binário via `include_str!`, então não há nada para instalar
-além do próprio arquivo.
+arquivos e um terminal real, servidos por um único executável. O `index.html` e
+as libs de frontend (CodeMirror, xterm.js) vão embutidos no binário, então não
+há nada para instalar além do próprio arquivo — e a placa não precisa de
+internet para a interface abrir.
 
 Feita para um Banana Pi M1 (Allwinner A20, ARMv7).
 
@@ -43,6 +44,11 @@ projeto é Rust puro.
 > O `index.html` é embutido no binário em tempo de compilação. Editar o HTML
 > exige um `cargo build` para a mudança valer.
 
+As libs de frontend ficam versionadas em `static/vendor/` porque o
+`include_bytes!` precisa delas na hora de compilar — assim o build não depende
+de npm nem de rede. Para trocar de versão, rode `static/vendor/atualizar.sh` e
+confira a lista `ASSETS` do `src/main.rs`.
+
 ## Testes
 
 ```sh
@@ -58,6 +64,7 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 | Rota | O que faz |
 | --- | --- |
 | `GET /` | A interface, servida da memória (embutida no binário). |
+| `GET /vendor/…` | CodeMirror e xterm.js, também embutidos. |
 | `GET /api/files?path=` | Lista uma pasta. |
 | `GET /api/read?path=` | Devolve o arquivo, ou 404 se ele não existir. |
 | `POST /api/save` | Grava o arquivo. |

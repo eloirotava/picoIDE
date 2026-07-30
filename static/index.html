@@ -4,23 +4,25 @@
     <meta charset="UTF-8">
     <title>Pico IDE</title>
     
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/dracula.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+    <!-- Tudo em /vendor vem embutido no executável, não de CDN: a placa pode
+         estar sem internet, e aí não haveria editor nem terminal. -->
+    <link rel="stylesheet" href="/vendor/codemirror/lib/codemirror.css">
+    <link rel="stylesheet" href="/vendor/codemirror/theme/dracula.css">
+    <script src="/vendor/codemirror/lib/codemirror.js"></script>
     <!-- O modo rust usa defineSimpleMode, que vem neste addon: sem ele o
          realce de .rs quebra silenciosamente. -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/mode/simple.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/rust/rust.min.js"></script>
+    <script src="/vendor/codemirror/addon/mode/simple.js"></script>
+    <script src="/vendor/codemirror/mode/javascript/javascript.js"></script>
+    <script src="/vendor/codemirror/mode/rust/rust.js"></script>
     <!-- htmlmixed depende de xml + css + javascript -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/xml/xml.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/css/css.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/htmlmixed/htmlmixed.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/toml/toml.min.js"></script>
+    <script src="/vendor/codemirror/mode/xml/xml.js"></script>
+    <script src="/vendor/codemirror/mode/css/css.js"></script>
+    <script src="/vendor/codemirror/mode/htmlmixed/htmlmixed.js"></script>
+    <script src="/vendor/codemirror/mode/toml/toml.js"></script>
 
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" />
+    <script src="/vendor/xterm/lib/xterm.js"></script>
+    <script src="/vendor/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
 
     <style>
         body { margin: 0; padding: 0; background-color: #1e1e1e; color: #ccc; font-family: sans-serif; display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 1fr 300px; height: 100vh; overflow: hidden; }
