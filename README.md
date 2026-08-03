@@ -47,9 +47,19 @@ Para a máquina local:
 cargo run
 ```
 
-Estático, para distribuir (troque o alvo conforme a máquina de destino:
-`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` ou
-`armv7-unknown-linux-musleabihf`):
+### Estático, para a própria máquina
+
+Não precisa de flag de linker nenhuma — o linker do sistema dá conta:
+
+```sh
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
+```
+
+No Alpine é este o caminho: a distro já é musl, e o `+crt-static` é necessário
+porque o `cargo` de lá linka dinamicamente por padrão. Se faltar linker,
+`apk add build-base`.
+
+### Estático, cross-compilando para outra arquitetura
 
 ```sh
 rustup target add armv7-unknown-linux-musleabihf
@@ -57,12 +67,23 @@ RUSTFLAGS="-C linker=rust-lld -C strip=symbols" \
   cargo build --release --target armv7-unknown-linux-musleabihf
 ```
 
-No Alpine, que já é musl, o alvo nativo serve — mas o `cargo` da distro linka
-dinamicamente, então para sair estático use
-`RUSTFLAGS="-C target-feature=+crt-static"`.
+Alvos: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
+`armv7-unknown-linux-musleabihf`.
 
-`rust-lld` dispensa instalar um toolchain de cross-compilação C, porque o
-projeto é Rust puro.
+O `-C linker=rust-lld` **só serve aqui**, e existe para dispensar um toolchain
+de cross-compilação C, já que o projeto é Rust puro. Sem ele o `cargo` chama o
+`cc` do sistema, que aciona o linker do host e não entende objeto de outra
+arquitetura:
+
+```
+/usr/bin/ld: crt1.o: Relocations in generic ELF (EM: 183)
+/usr/bin/ld: crt1.o: error adding symbols: file in wrong format
+```
+
+> **Não use essa flag em build nativo.** O `rust-lld` não fica no `PATH`: ele
+> vem dentro do toolchain do rustup. Com o Rust da distro (`apk add rust`) ele
+> não existe, e o build morre com `error: linker \`rust-lld\` not found`. Para
+> cross-compilar do Alpine, instale o rustup em vez do pacote da distro.
 
 > O `index.html` é embutido no binário em tempo de compilação. Editar o HTML
 > exige um `cargo build` para a mudança valer.
