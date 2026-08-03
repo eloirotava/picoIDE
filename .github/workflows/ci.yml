@@ -11,9 +11,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ALVO: armv7-unknown-linux-musleabihf
-
 jobs:
   testes:
     name: Testes de ponta a ponta
@@ -41,86 +38,109 @@ jobs:
         run: ./tests/e2e/run.sh
 
   build:
-    name: Executável armhf estático
+    name: Executável ${{ matrix.nome }} estático
     runs-on: ubuntu-latest
     # musl já linka estático por padrão, e rust-lld dispensa instalar um
     # toolchain de cross-compilação C, porque o projeto é Rust puro.
     env:
       RUSTFLAGS: -C linker=rust-lld -C strip=symbols
+      ALVO: ${{ matrix.alvo }}
+      SAIDA: picoide-${{ matrix.nome }}
+    strategy:
+      # Um alvo quebrado não impede de ver se os outros dois estão de pé.
+      fail-fast: false
+      matrix:
+        include:
+          - nome: amd64
+            alvo: x86_64-unknown-linux-musl
+            padrao_file: x86-64
+            qemu: ''
+          - nome: armhf
+            alvo: armv7-unknown-linux-musleabihf
+            padrao_file: 'ELF 32-bit.*ARM,'
+            qemu: qemu-arm-static
+          - nome: arm64
+            alvo: aarch64-unknown-linux-musl
+            padrao_file: ARM aarch64
+            qemu: qemu-aarch64-static
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instala o Rust com o alvo armhf
+      - name: Instala o Rust com o alvo ${{ matrix.nome }}
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: armv7-unknown-linux-musleabihf
+          targets: ${{ matrix.alvo }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ env.ALVO }}
+          key: ${{ matrix.alvo }}
 
       - name: Compila
         run: cargo build --release --target "$ALVO"
 
-      - name: Confere que saiu estático e ARMv7 hard-float
+      - name: Confere que saiu estático e na arquitetura certa
         run: |
           BIN="target/$ALVO/release/meu-mini-ide"
           file "$BIN"
-          readelf -A "$BIN" | grep -E 'Tag_CPU_arch:|Tag_ABI_VFP_args:'
 
-          # Um binário dinâmico rodaria em quem tem as libs certas e falharia na
-          # placa, então isso precisa ser um erro duro e não um aviso.
+          # Um binário dinâmico rodaria em quem tem as libs certas e falharia
+          # em quem não tem, então isso é erro duro e não aviso.
           if readelf -d "$BIN" 2>/dev/null | grep -q NEEDED; then
             echo "::error::O binário ficou dinâmico (tem dependências NEEDED)."
             exit 1
           fi
-          if ! file "$BIN" | grep -q "ARM"; then
-            echo "::error::O binário não é ARM."
-            exit 1
-          fi
-          if ! readelf -A "$BIN" | grep -q "Tag_ABI_VFP_args: VFP registers"; then
-            echo "::error::O binário não é hard-float (armhf)."
+
+          # Entregar o binário de uma arquitetura com o nome de outra rende um
+          # "syntax error" incompreensível na máquina de quem baixou.
+          if ! file "$BIN" | grep -qE '${{ matrix.padrao_file }}'; then
+            echo "::error::O binário não casa com a arquitetura ${{ matrix.nome }}."
             exit 1
           fi
 
-          cp "$BIN" picoide-armhf
+          if [ "${{ matrix.nome }}" = "armhf" ]; then
+            readelf -A "$BIN" | grep -E 'Tag_CPU_arch:|Tag_ABI_VFP_args:'
+            if ! readelf -A "$BIN" | grep -q "Tag_ABI_VFP_args: VFP registers"; then
+              echo "::error::O binário não é hard-float (armhf)."
+              exit 1
+            fi
+          fi
 
-      - name: Sobe o binário sob emulação ARM e testa
+          cp "$BIN" "$SAIDA"
+
+      - name: Sobe o binário e testa
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static
+          if [ -n "${{ matrix.qemu }}" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq qemu-user-static
+          fi
 
-          qemu-arm-static ./picoide-armhf &
+          # Emulação só onde a arquitetura não é a do runner; o amd64 roda nativo.
+          ${{ matrix.qemu }} ./"$SAIDA" &
           SERVIDOR=$!
+
+          morre() {
+            echo "::error::$1"
+            kill $SERVIDOR 2>/dev/null || true
+            exit 1
+          }
 
           subiu=0
           for _ in $(seq 1 30); do
             if curl -sf -o /dev/null http://127.0.0.1:8080/; then subiu=1; break; fi
             sleep 1
           done
-
-          if [ "$subiu" != "1" ]; then
-            echo "::error::O binário armhf não respondeu na porta 8080."
-            kill $SERVIDOR 2>/dev/null || true
-            exit 1
-          fi
+          [ "$subiu" = "1" ] || morre "O binário ${{ matrix.nome }} não respondeu na porta 8080."
           echo "A página abriu."
 
-          if ! curl -sf "http://127.0.0.1:8080/api/files?path=/" | grep -q '"is_dir"'; then
-            echo "::error::/api/files não devolveu a listagem esperada."
-            kill $SERVIDOR 2>/dev/null || true
-            exit 1
-          fi
+          curl -sf "http://127.0.0.1:8080/api/files?path=/" | grep -q '"is_dir"' \
+            || morre "/api/files não devolveu a listagem esperada."
           echo "A API de arquivos respondeu."
 
           # A interface só abre sem internet se as libs saírem do próprio
-          # binário, então conferimos no executável que vai para a placa.
+          # binário, então conferimos no executável que vai ser publicado.
           for asset in $(grep -oE '/vendor/[A-Za-z0-9./_-]+' static/index.html | sort -u); do
-            if ! curl -sf -o /dev/null "http://127.0.0.1:8080$asset"; then
-              echo "::error::O binário não serviu $asset."
-              kill $SERVIDOR 2>/dev/null || true
-              exit 1
-            fi
+            curl -sf -o /dev/null "http://127.0.0.1:8080$asset" \
+              || morre "O binário não serviu $asset."
           done
           echo "As libs embutidas responderam."
 
@@ -128,13 +148,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: picoide-armhf
-          path: picoide-armhf
+          name: picoide-${{ matrix.nome }}
+          path: picoide-${{ matrix.nome }}
           if-no-files-found: error
 
   release:
     name: Publica a release
-    # Só publica binário que passou nos testes e rodou sob emulação ARM.
+    # Só publica binário que passou nos testes e subiu de verdade nos três alvos.
     needs: [testes, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -143,33 +163,46 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: picoide-armhf
+          pattern: picoide-*
+          merge-multiple: true
 
-      - name: Gera o checksum
-        run: sha256sum picoide-armhf > picoide-armhf.sha256
+      - name: Gera os checksums
+        run: |
+          chmod +x picoide-*
+          sha256sum picoide-amd64 picoide-armhf picoide-arm64 > SHA256SUMS
+          cat SHA256SUMS
 
-      - name: Cria a release com o binário anexado
+      - name: Cria a release com os binários anexados
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notas.md <<NOTAS
-          Binário estático para ARMv7 hard-float (musl). Não precisa instalar
-          nada na placa, nem a placa precisa de internet: o HTML da interface e
-          as libs de frontend vão embutidos no executável.
+          Binários estáticos (musl). Não precisa instalar nada, nem a máquina
+          precisa de internet: o HTML da interface e as libs de frontend vão
+          embutidos no executável.
 
-          ## Instalando no Banana Pi
+          | Arquivo | Para |
+          | --- | --- |
+          | \`picoide-amd64\` | PC/servidor x86-64 |
+          | \`picoide-arm64\` | ARM 64-bit (Raspberry Pi 3/4/5 em SO 64-bit, Orange Pi, etc) |
+          | \`picoide-armhf\` | ARM 32-bit hard-float (Banana Pi M1, Raspberry Pi em SO 32-bit) |
+
+          Na dúvida sobre qual baixar, rode \`uname -m\`: \`x86_64\` → amd64,
+          \`aarch64\` → arm64, \`armv7l\` → armhf.
+
+          ## Instalando
 
           \`\`\`sh
-          chmod +x picoide-armhf
-          ./picoide-armhf
+          chmod +x picoide-amd64
+          ./picoide-amd64
           \`\`\`
 
-          Depois abra \`http://IP-DA-PLACA:8080\`.
+          Depois abra \`http://IP-DA-MAQUINA:8080\`.
 
           ## Conferindo o download
 
           \`\`\`sh
-          sha256sum -c picoide-armhf.sha256
+          sha256sum -c SHA256SUMS --ignore-missing
           \`\`\`
 
           ## Mudanças
@@ -181,4 +214,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "picoIDE $GITHUB_REF_NAME" \
             --notes-file notas.md \
-            picoide-armhf picoide-armhf.sha256
+            picoide-amd64 picoide-arm64 picoide-armhf SHA256SUMS

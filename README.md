@@ -10,17 +10,25 @@ Feita para um Banana Pi M1 (Allwinner A20, ARMv7).
 
 ## Rodando
 
-Baixe o `picoide-armhf` da [última release](../../releases/latest) e execute:
+Baixe o binário da sua arquitetura na [última release](../../releases/latest):
+
+| Arquivo | Para | `uname -m` |
+| --- | --- | --- |
+| `picoide-amd64` | PC/servidor x86-64 | `x86_64` |
+| `picoide-arm64` | ARM 64-bit (Raspberry Pi 3/4/5 em SO 64-bit) | `aarch64` |
+| `picoide-armhf` | ARM 32-bit hard-float (Banana Pi M1) | `armv7l` |
 
 ```sh
-chmod +x picoide-armhf
-./picoide-armhf
+chmod +x picoide-amd64
+./picoide-amd64
 ```
 
-Depois abra `http://IP-DA-PLACA:8080`.
+Depois abra `http://IP-DA-MAQUINA:8080`.
 
-O binário é estático (musl), então não depende de glibc nem de nada instalado
-na placa.
+Os binários são estáticos (musl), então não dependem de glibc nem de nada
+instalado no destino. Rodar o de uma arquitetura na outra dá um erro
+enganoso (`syntax error: unexpected word`): é o shell tentando interpretar o
+ELF como script depois que o kernel recusou o `execve`. Confira o `uname -m`.
 
 ## Compilando
 
@@ -30,13 +38,19 @@ Para a máquina local:
 cargo run
 ```
 
-Para a placa (ARMv7 hard-float, estático):
+Estático, para distribuir (troque o alvo conforme a máquina de destino:
+`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` ou
+`armv7-unknown-linux-musleabihf`):
 
 ```sh
 rustup target add armv7-unknown-linux-musleabihf
 RUSTFLAGS="-C linker=rust-lld -C strip=symbols" \
   cargo build --release --target armv7-unknown-linux-musleabihf
 ```
+
+No Alpine, que já é musl, o alvo nativo serve — mas o `cargo` da distro linka
+dinamicamente, então para sair estático use
+`RUSTFLAGS="-C target-feature=+crt-static"`.
 
 `rust-lld` dispensa instalar um toolchain de cross-compilação C, porque o
 projeto é Rust puro.
