@@ -93,6 +93,53 @@ enum WsTerminalMessage {
     #[serde(rename = "ping")] Ping,
 }
 
+const PORTA_PADRAO: u16 = 8080;
+
+// Argumentos na mão em vez de uma crate de CLI: é uma opção só, e o binário
+// vai para uma placa onde cada dependência pesa no tamanho e no tempo de build.
+fn porta_dos_argumentos() -> u16 {
+    let mut args = std::env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        let valor = match arg.as_str() {
+            "-h" | "--ajuda" | "--help" => {
+                println!("picoIDE — IDE mínima servida por um executável só.\n");
+                println!("Uso: picoide [--porta N]\n");
+                println!("  -p, --porta N   Porta onde escutar (padrão: {}).", PORTA_PADRAO);
+                println!("  -h, --ajuda     Mostra esta ajuda.");
+                std::process::exit(0);
+            }
+            "-p" | "--porta" => args.next(),
+            outro if outro.starts_with("--porta=") => {
+                Some(outro["--porta=".len()..].to_string())
+            }
+            // Um número solto também vale: "picoide 9090".
+            outro if outro.parse::<u16>().is_ok() => Some(outro.to_string()),
+            outro => {
+                eprintln!("Argumento desconhecido: {}. Use --ajuda.", outro);
+                std::process::exit(2);
+            }
+        };
+
+        // Porta inválida é erro duro: escutar numa porta diferente da pedida
+        // faria o usuário procurar o problema no lugar errado.
+        match valor.as_deref().map(str::parse::<u16>) {
+            Some(Ok(0)) | None => {
+                eprintln!("--porta precisa de um número entre 1 e 65535.");
+                std::process::exit(2);
+            }
+            Some(Err(_)) => {
+                eprintln!("Porta inválida: {}. Use um número entre 1 e 65535.",
+                          valor.unwrap_or_default());
+                std::process::exit(2);
+            }
+            Some(Ok(n)) => return n,
+        }
+    }
+
+    PORTA_PADRAO
+}
+
 #[tokio::main]
 async fn main() {
     let registro: Registro = Arc::new(Mutex::new(HashMap::new()));
@@ -101,6 +148,7 @@ async fn main() {
         // Servindo o HTML direto da memória RAM!
         .route("/", get(serve_index))
         .route("/vendor/*caminho", get(serve_vendor))
+        .route("/icone.svg", get(serve_icone))
         .route("/api/files", get(list_files))
         .route("/api/read", get(read_file))
         .route("/api/save", post(save_file))
@@ -113,7 +161,7 @@ async fn main() {
         .route("/api/terminal/encerrar", post(encerrar_sessao))
         .with_state(registro);
 
-    let porta = 8080;
+    let porta = porta_dos_argumentos();
     let addr = SocketAddr::from(([0, 0, 0, 0], porta));
 
     println!("🚀 Pico IDE (Binário Único) rodando na porta {}!", porta);
@@ -126,6 +174,18 @@ async fn main() {
 // O include_str! injeta o conteúdo do index.html dentro do executável no momento da compilação.
 async fn serve_index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
+}
+
+// SVG em vez de .ico: um arquivo de texto de 500 bytes que fica nítido em
+// qualquer tamanho, e que vai embutido como o resto.
+async fn serve_icone() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, CACHE_ASSETS),
+        ],
+        include_str!("../static/icone.svg"),
+    )
 }
 
 // --- LIBS DA INTERFACE ---

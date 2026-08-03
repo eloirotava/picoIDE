@@ -25,6 +25,15 @@ chmod +x picoide-amd64
 
 Depois abra `http://IP-DA-MAQUINA:8080`.
 
+A porta padrão é 8080; para trocar, `--porta N` (ou `-p N`, ou só o número):
+
+```sh
+./picoide-amd64 --porta 9090
+```
+
+Porta inválida ou argumento desconhecido é erro duro, com saída 2 — escutar
+numa porta diferente da pedida faria você procurar o problema no lugar errado.
+
 Os binários são estáticos (musl), então não dependem de glibc nem de nada
 instalado no destino. Rodar o de uma arquitetura na outra dá um erro
 enganoso (`syntax error: unexpected word`): é o shell tentando interpretar o
@@ -78,6 +87,7 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 | Rota | O que faz |
 | --- | --- |
 | `GET /` | A interface, servida da memória (embutida no binário). |
+| `GET /icone.svg` | O ícone da aba, também embutido. |
 | `GET /vendor/…` | CodeMirror e xterm.js, também embutidos. |
 | `GET /api/files?path=` | Lista uma pasta. |
 | `GET /api/read?path=` | Devolve o arquivo como texto: 404 se não existir, 415 se for binário. |

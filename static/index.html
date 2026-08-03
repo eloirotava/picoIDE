@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Pico IDE</title>
+    <link rel="icon" type="image/svg+xml" href="/icone.svg">
     
     <!-- Tudo em /vendor vem embutido no executável, não de CDN: a placa pode
          estar sem internet, e aí não haveria editor nem terminal. -->
@@ -49,9 +50,13 @@
            Manter os inativos montados (em vez de recriar) preserva a tela e o
            scrollback de cada um ao trocar de aba. */
         #telas-terminais { flex-grow: 1; position: relative; overflow: hidden; }
-        .terminal-tela { position: absolute; inset: 0; padding: 10px; box-sizing: border-box; display: none; }
+        .terminal-tela { position: absolute; inset: 0; display: none; }
         .terminal-tela.ativa { display: block; }
-        .terminal { height: 100%; }
+        /* O padding fica AQUI, no próprio .xterm, e não no pai: o FitAddon
+           calcula as linhas a partir da altura do pai menos o padding deste
+           elemento. Com o padding no pai ele contava uma linha a mais do que
+           cabe, e a última saía cortada para fora da página. */
+        .terminal { height: 100%; padding: 10px; box-sizing: border-box; }
         .barra-abas { display: flex; align-items: stretch; background: #252526; border-bottom: 1px solid #333; overflow-x: auto; flex-shrink: 0; }
         .aba { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: #2d2d30; color: #ccc; border-right: 1px solid #1e1e1e; cursor: pointer; white-space: nowrap; font-size: 13px; user-select: none; }
         .aba.ativa { background: #1e1e1e; color: #fff; }

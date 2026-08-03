@@ -115,7 +115,20 @@ def testar_terminais(page, falhas):
     if "AINDA_VIVO" not in ler_terminal(page):
         falhas.append("o terminal restante parou de funcionar")
 
+    # O FitAddon calcula as linhas a partir da altura do pai menos o padding do
+    # próprio .xterm. Com o padding no lugar errado ele conta uma linha a mais
+    # do que cabe, e a última fica cortada para fora da página.
+    vazamento = page.evaluate("""() => {
+        const tela = document.querySelector('.terminal-tela.ativa');
+        const screen = tela.querySelector('.xterm-screen');
+        return screen.getBoundingClientRect().bottom
+             - tela.getBoundingClientRect().bottom;
+    }""")
+    if vazamento > 0:
+        falhas.append(f"o terminal passa {vazamento:.1f}px do fim da área visível")
+
     print("OK: terminais são sessões distintas e fechar um não afeta o outro")
+    print("OK: o conteúdo do terminal cabe na área sem cortar linha")
 
 
 def testar_restauracao(pw, pasta, falhas):

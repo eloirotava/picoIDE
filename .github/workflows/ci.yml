@@ -142,6 +142,8 @@ jobs:
             curl -sf -o /dev/null "http://127.0.0.1:8080$asset" \
               || morre "O binário não serviu $asset."
           done
+          curl -sf -o /dev/null "http://127.0.0.1:8080/icone.svg" \
+            || morre "O binário não serviu /icone.svg."
           echo "As libs embutidas responderam."
 
           kill $SERVIDOR 2>/dev/null || true
