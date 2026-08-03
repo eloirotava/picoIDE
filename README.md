@@ -49,15 +49,32 @@ cargo run
 
 ### Estático, para a própria máquina
 
-Não precisa de flag de linker nenhuma — o linker do sistema dá conta:
+Não precisa de flag de linker nenhuma — o linker do sistema dá conta. Mas o
+`--target` é obrigatório, mesmo sendo a arquitetura em que você já está:
 
 ```sh
-RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
+RUSTFLAGS="-C target-feature=+crt-static" \
+  cargo build --release --target "$(rustc -vV | sed -n 's/^host: //p')"
+# binário em target/<triple>/release/meu-mini-ide
 ```
+
+Sem o `--target`, o `RUSTFLAGS` também vale para os *proc-macros*, que são
+compilados para a máquina do build e precisam ser bibliotecas dinâmicas — o
+`+crt-static` torna isso impossível:
+
+```
+error: cannot produce proc-macro for `async-trait` as the target
+       `x86_64-unknown-linux-musl` does not support these crate types
+```
+
+Com o `--target` explícito o cargo aplica as flags só ao alvo, e os proc-macros
+compilam normalmente.
 
 No Alpine é este o caminho: a distro já é musl, e o `+crt-static` é necessário
 porque o `cargo` de lá linka dinamicamente por padrão. Se faltar linker,
-`apk add build-base`.
+`apk add build-base`. O `$(rustc -vV ...)` evita errar o nome do alvo: o Rust
+da distro se chama `x86_64-alpine-linux-musl`, e o do rustup,
+`x86_64-unknown-linux-musl`.
 
 ### Estático, cross-compilando para outra arquitetura
 
@@ -159,6 +176,14 @@ funciona. É assim que se tira da placa o executável que o build acabou de gera
 
 Os dois lados passam em fluxo, sem juntar o arquivo inteiro na memória, e o
 `POST /api/upload` não tem teto de tamanho: o que limita é o disco.
+
+No terminal, **selecionar já copia** (como no ttyd), e colar é `Ctrl+V`. O
+`Ctrl+C` fica intocado: no terminal ele interrompe o processo, e sobrecarregar
+essa tecla deixaria ambígua a mais importante das duas funções.
+
+Acessar a placa por `http://IP` não é contexto seguro, e ali a Clipboard API do
+navegador nem existe — por isso o copiar tem um caminho alternativo, que é
+justamente o que roda no uso real.
 
 A árvore se atualiza sozinha a cada 10s, mas só repinta quando a listagem
 realmente mudou. Sem essa checagem a barra pisca a cada ciclo e você perde a

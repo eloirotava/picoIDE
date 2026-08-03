@@ -131,6 +131,55 @@ def testar_terminais(page, falhas):
     print("OK: o conteúdo do terminal cabe na área sem cortar linha")
 
 
+def testar_copiar_colar(page, falhas):
+    """Copiar é ao selecionar; o Ctrl+C fica sendo só o SIGINT."""
+    focar = ("() => document.querySelector("
+             "'.terminal-tela.ativa .xterm-helper-textarea').focus()")
+
+    # Ctrl+C não pode ter virado copiar: no terminal ele interrompe, e é para
+    # continuar assim mesmo COM texto selecionado na tela.
+    page.evaluate(focar)
+    page.keyboard.type("sleep 90\n")
+    page.wait_for_timeout(1500)
+    page.evaluate("() => window.term.selectAll()")
+    page.wait_for_timeout(600)
+    page.evaluate(focar)
+    page.keyboard.press("Control+c")
+    page.wait_for_timeout(1500)
+    page.evaluate(focar)
+    page.keyboard.type("echo INTERROMPEU\n")
+    page.wait_for_timeout(2500)
+    if "INTERROMPEU" not in ler_terminal(page):
+        falhas.append("Ctrl+C deixou de interromper o processo")
+
+    # Selecionar já copia. Forçamos o caminho sem Clipboard API, que é o que
+    # roda de verdade: acessar a placa por http://IP não é contexto seguro.
+    page.evaluate("""() => Object.defineProperty(window, 'isSecureContext',
+                        { value: false, configurable: true })""")
+    page.evaluate("() => window.term.clearSelection()")
+    page.wait_for_timeout(300)
+    page.evaluate("() => window.term.selectAll()")
+    page.wait_for_timeout(1200)   # a cópia espera a seleção assentar
+    page.evaluate("() => window.term.clearSelection()")
+
+    # Confere colando num textarea comum, com Ctrl+V nativo: não usa a API.
+    page.evaluate("""() => {
+        const a = document.createElement('textarea');
+        a.id = 'prova-clipboard';
+        a.style.cssText = 'position:fixed;top:0;left:0;z-index:9999';
+        document.body.appendChild(a);
+        a.focus();
+    }""")
+    page.keyboard.press("Control+v")
+    page.wait_for_timeout(800)
+    prova = page.evaluate("() => document.getElementById('prova-clipboard').value")
+    if "INTERROMPEU" not in (prova or ""):
+        falhas.append(f"selecionar não copiou: {str(prova)[:80]!r}")
+    page.evaluate("() => document.getElementById('prova-clipboard').remove()")
+
+    print("OK: selecionar já copia, e o Ctrl+C segue interrompendo")
+
+
 def testar_restauracao(pw, pasta, falhas):
     """As duas listas de abas precisam voltar depois do F5."""
     navegador = abrir_navegador(pw)
@@ -179,6 +228,7 @@ if __name__ == "__main__":
 
                 testar_arquivos(page, pasta, falhas)
                 testar_terminais(page, falhas)
+                testar_copiar_colar(page, falhas)
                 if erros:
                     falhas.append(f"erros de JS na página: {erros}")
                 navegador.close()

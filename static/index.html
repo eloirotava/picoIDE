@@ -559,6 +559,46 @@
         const terminais = [];   // { term, fit, ws, sessao, tentativas, encerrado, tela }
         let terminalAtivo = -1;
 
+        // A Clipboard API só existe em contexto seguro. Acessar a placa por
+        // http://IP-DA-MAQUINA:8080 NÃO é contexto seguro (só localhost e
+        // https são), então o caminho antigo com execCommand precisa continuar
+        // aqui: é ele que roda no uso real.
+        async function copiarSelecao(term) {
+            const texto = term.getSelection();
+            if (!texto) return;
+
+            const anterior = document.activeElement;
+            try {
+                if (window.isSecureContext && navigator.clipboard) {
+                    await navigator.clipboard.writeText(texto);
+                } else {
+                    const area = document.createElement('textarea');
+                    area.value = texto;
+                    area.style.position = 'fixed';
+                    area.style.opacity = '0';
+                    document.body.appendChild(area);
+                    area.select();
+                    document.execCommand('copy');
+                    area.remove();
+                }
+            } catch (e) { /* navegador negou; a seleção continua lá para o botão direito */ }
+
+            // Devolve o foco a quem tinha: copiar não pode tirar o teclado do
+            // terminal, nem roubá-lo de outro campo em que você estava.
+            if (anterior && anterior.focus) anterior.focus();
+        }
+
+        // Só para o Ctrl+Shift+V: o navegador não dispara colar nativo nessa
+        // combinação, então aqui não tem como fugir da Clipboard API.
+        async function colarDaApi(term) {
+            try {
+                if (window.isSecureContext && navigator.clipboard) {
+                    const texto = await navigator.clipboard.readText();
+                    if (texto) term.paste(texto);
+                }
+            } catch (e) { /* sem permissão: resta o Ctrl+V, que usa o caminho nativo */ }
+        }
+
         function desenharAbasTerminais() {
             const barra = document.getElementById('abas-terminais');
             barra.innerHTML = '';
@@ -733,6 +773,29 @@
 
             const t = { term, fit, ws: null, sessao, tentativas: 0, encerrado: false, tela };
             terminais.push(t);
+
+            // Copiar é ao selecionar, como no ttyd: no terminal o Ctrl+C já
+            // significa interromper o processo, e sobrecarregar essa tecla
+            // deixaria a mais importante das duas funções ambígua.
+            let timerCopia = null;
+            term.onSelectionChange(() => {
+                clearTimeout(timerCopia);
+                if (!term.hasSelection()) return;
+                // Espera a seleção assentar: copiar no meio do arrasto mexeria
+                // no foco e cancelaria a seleção que está sendo feita.
+                timerCopia = setTimeout(() => copiarSelecao(term), 200);
+            });
+
+            // Colar continua no Ctrl+V. Devolver false faz o xterm não mandar
+            // o ^V literal nem chamar preventDefault, então o colar nativo do
+            // navegador acontece e o próprio xterm o recebe — o que funciona
+            // também em http://IP, onde a Clipboard API nem existe.
+            term.attachCustomKeyEventHandler(evento => {
+                if (evento.type !== 'keydown' || !evento.ctrlKey || evento.altKey) return true;
+                if (evento.key.toLowerCase() !== 'v') return true;
+                if (evento.shiftKey) colarDaApi(term);
+                return false;
+            });
 
             term.onData(data => {
                 if (t.encerrado) {
