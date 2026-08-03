@@ -36,12 +36,6 @@
         .file-item:hover { background-color: #37373d; }
         .is-dir { font-weight: bold; color: #d7ba7d; }
         .folder-children { border-left: 1px solid #444; margin-left: 10px; padding-left: 5px; }
-        .linha-arquivo { display: flex; align-items: center; gap: 4px; }
-        .linha-arquivo > .nome { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; }
-        /* Visível o bastante para se saber que existe, apagado o bastante para
-           não competir com o nome do arquivo. */
-        .btn-baixar { opacity: 0.35; flex-shrink: 0; padding: 0 4px; }
-        .linha-arquivo:hover .btn-baixar { opacity: 1; }
         #sidebar.soltando { outline: 2px dashed #0e639c; outline-offset: -2px; }
         #status-upload:empty { display: none; }
         #status-upload { padding: 6px 10px; font-size: 12px; color: #d7ba7d; background: #2d2d30; }
@@ -71,7 +65,7 @@
         <div id="top-bar">
             <span id="current-file">Nenhum arquivo aberto</span>
             <span>
-                <button id="btn-baixar-atual" onclick="baixarAtual()" title="Baixar o arquivo aberto">⬇</button>
+                <button id="btn-baixar-atual" onclick="baixarAtual()" title="Baixar o arquivo aberto">⬇ Baixar</button>
                 <button id="btn-salvar" onclick="salvarArquivo()">Salvar (Ctrl+S)</button>
             </span>
         </div>
@@ -109,10 +103,22 @@
 
         let arquivoAtual = "";
         let timeoutAutosave = null;
-        let bloqueiaAutosaveInicial = true; 
+        let bloqueiaAutosaveInicial = true;
+        // Binário aberto: dá para baixar, não dá para editar nem salvar.
+        let binarioAberto = false;
+
+        // Baixar só faz sentido com arquivo aberto; salvar, só se for texto.
+        function atualizarBotoes() {
+            const baixar = document.getElementById('btn-baixar-atual');
+            const salvar = document.getElementById('btn-salvar');
+            baixar.disabled = !arquivoAtual;
+            baixar.style.opacity = arquivoAtual ? '1' : '0.4';
+            salvar.disabled = binarioAberto;
+            salvar.style.opacity = binarioAberto ? '0.4' : '1';
+        }
 
         editor.on("change", () => {
-            if (!arquivoAtual || bloqueiaAutosaveInicial) return;
+            if (!arquivoAtual || bloqueiaAutosaveInicial || binarioAberto) return;
             const btnSalvar = document.getElementById("btn-salvar");
             btnSalvar.textContent = "Modificado...";
             btnSalvar.style.background = "#c77200"; 
@@ -167,7 +173,27 @@
                 nomesNaPasta.clear();
                 files.forEach(f => { if (!f.is_dir) nomesNaPasta.add(f.name); });
             }
-            
+
+            // O que a árvore mostra é só nome e se é pasta, então isto resume
+            // exatamente o que está na tela. Se não mudou, não repinta: trocar
+            // o DOM à toa é o que faz a barra piscar a cada 10s, além de matar
+            // a seleção de texto e a posição da rolagem.
+            // O caminho entra na assinatura porque duas pastas diferentes podem
+            // ter a mesma lista de nomes, e aí repintar é obrigatório.
+            const assinatura = JSON.stringify([caminho, files.map(f => [f.name, f.is_dir])]);
+            if (elementoPai.dataset.assinatura === assinatura) {
+                // Nada novo aqui, mas uma subpasta aberta pode ter mudado.
+                elementoPai
+                    .querySelectorAll(':scope > .file-item > .folder-children')
+                    .forEach(filho => {
+                        if (filho.style.display !== 'none' && filho.dataset.caminho) {
+                            carregarArquivos(filho.dataset.caminho, filho);
+                        }
+                    });
+                return;
+            }
+            elementoPai.dataset.assinatura = assinatura;
+
             // Fragmento de documento permite montar a árvore na memória antes de jogar na tela (zero flicker)
             const fragment = document.createDocumentFragment();
 
@@ -180,6 +206,9 @@
                 if (f.is_dir) {
                     const childrenContainer = document.createElement('div');
                     childrenContainer.className = 'folder-children';
+                    // Guardado no próprio nó para o refresh conseguir revisitar
+                    // as subpastas abertas sem reconstruir a árvore.
+                    childrenContainer.dataset.caminho = f.path;
                     
                     // Verifica se a pasta estava na memória de abertas
                     const isOpen = pastasAbertas.has(f.path);
@@ -202,6 +231,7 @@
                             pastasAbertas.delete(f.path);
                             salvarPastasAbertas();
                             childrenContainer.innerHTML = '';
+                            delete childrenContainer.dataset.assinatura;
                         }
                     };
 
@@ -210,24 +240,8 @@
                         carregarArquivos(f.path, childrenContainer);
                     }
                 } else {
-                    header.className = 'linha-arquivo';
-
-                    const nome = document.createElement('span');
-                    nome.className = 'nome';
-                    nome.textContent = '📄 ' + f.name;
-                    nome.onclick = (e) => { e.stopPropagation(); abrirArquivo(f.path, f.name); };
-
-                    // Baixar por arquivo, e não só o que está aberto no editor:
-                    // o caso comum é tirar da placa um binário que o build
-                    // acabou de gerar, e binário não se abre no editor.
-                    const baixar = document.createElement('span');
-                    baixar.className = 'btn-baixar';
-                    baixar.textContent = '⬇';
-                    baixar.title = 'Baixar ' + f.name;
-                    baixar.onclick = (e) => { e.stopPropagation(); baixarArquivo(f.path); };
-
-                    header.appendChild(nome);
-                    header.appendChild(baixar);
+                    header.textContent = '📄 ' + f.name;
+                    header.onclick = (e) => { e.stopPropagation(); abrirArquivo(f.path, f.name); };
                 }
                 fragment.appendChild(div);
             });
@@ -322,18 +336,39 @@
             clearTimeout(timeoutAutosave);
 
             const res = await fetch(`/api/read?path=${encodeURIComponent(caminho)}`);
+            if (res.status === 415) {
+                // Binário: o editor não tem o que mostrar, mas o arquivo é
+                // real e continua sendo o arquivo aberto — é assim que dá para
+                // baixá-lo, que é o único jeito de tirar um build da placa.
+                arquivoAtual = caminho;
+                binarioAberto = true;
+                gravarMemoria(CHAVES.arquivo, { path: caminho, name: nome });
+                document.getElementById('current-file').textContent = `${nome} (binário)`;
+                editor.setValue("Arquivo binário");
+                // readOnly evita o pior caso: digitar por cima e o autosave
+                // gravar este texto em cima do binário.
+                editor.setOption("readOnly", true);
+                atualizarBotoes();
+                return;
+            }
             if (!res.ok) {
                 // Arquivo sumiu: não assume ele como atual, senão o autosave o recriaria.
                 document.getElementById('current-file').textContent = `${nome} (não encontrado)`;
                 arquivoAtual = "";
+                binarioAberto = false;
+                editor.setOption("readOnly", false);
                 gravarMemoria(CHAVES.arquivo, null);
+                atualizarBotoes();
                 return;
             }
             const texto = await res.text();
 
             arquivoAtual = caminho;
+            binarioAberto = false;
+            editor.setOption("readOnly", false);
             gravarMemoria(CHAVES.arquivo, { path: caminho, name: nome });
             document.getElementById('current-file').textContent = nome;
+            atualizarBotoes();
 
             const btnSalvar = document.getElementById("btn-salvar");
             btnSalvar.textContent = "Salvar (Ctrl+S)";
@@ -349,8 +384,9 @@
         }
 
         async function salvarArquivo(isAuto = false) {
-            if (!arquivoAtual) return;
-            
+            // Salvar um binário gravaria o texto do aviso por cima dele.
+            if (!arquivoAtual || binarioAberto) return;
+
             const btnSalvar = document.getElementById("btn-salvar");
             btnSalvar.textContent = isAuto ? "Autosalvando..." : "Salvando...";
             
@@ -375,6 +411,8 @@
 
         // --- GATILHOS DE AUTO-UPDATE ---
         
+        atualizarBotoes();
+
         // Gatilho 1: Início — já na pasta que estava aberta antes do F5
         mudarRaiz();
 

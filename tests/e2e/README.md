@@ -7,7 +7,8 @@ a um F5 e o terminal não cair sozinho.
 | --- | --- |
 | `test_terminal.py` | O shell nasce na pasta pedida, `TERM` está definido, o servidor manda Ping de keepalive (conexão viva após 50s ociosa) e fecha limpo no `exit`. |
 | `test_sessao.py` | Um processo iniciado no terminal continua rodando depois de fechar a aba, reatar devolve o mesmo shell com histórico e estado, id desconhecido abre shell novo e sessão encerrada não é reatada. |
-| `test_arquivos.py` | Upload e download preservam o arquivo byte a byte (3 MB aleatórios), nome com acento sobrevive ao cabeçalho HTTP, os erros dão o código certo, e a interface envia pelo seletor e baixa pelo botão da linha. |
+| `test_arquivos.py` | Upload e download preservam o arquivo byte a byte (3 MB aleatórios), nome com acento sobrevive ao cabeçalho HTTP, os erros dão o código certo, e abrir um binário permite baixá-lo sem que o autosave o corrompa. |
+| `test_arvore.py` | O refresh automático não repinta a árvore quando nada mudou (é o que fazia a barra piscar), mas continua mostrando arquivo novo — na raiz e dentro de subpasta aberta. |
 | `test_persistencia.py` | Depois de um reload voltam a pasta, a árvore expandida, o arquivo aberto e o conteúdo no editor — e o terminal é o mesmo shell de antes, com variável e histórico intactos. |
 | `test_reconexao.py` | Derruba o servidor de verdade e confere que o terminal reconecta sozinho; e que um `exit` não vira laço de reconexão. |
 

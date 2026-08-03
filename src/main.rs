@@ -478,8 +478,12 @@ async fn list_files(Query(query): Query<FileQuery>) -> Json<Vec<FileNode>> {
 // Devolve 404 quando o arquivo não existe mais, para o navegador conseguir
 // distinguir "arquivo apagado" de "arquivo com o texto 'Erro ao ler arquivo.'"
 // ao restaurar a última sessão.
+// 415 (e não 404) quando o arquivo existe mas não é texto: o editor não tem o
+// que mostrar, mas o arquivo é real e precisa continuar sendo o "arquivo
+// aberto" para poder ser baixado.
 async fn read_file(Query(query): Query<ReadQuery>) -> Result<String, StatusCode> {
-    fs::read_to_string(&query.path).map_err(|_| StatusCode::NOT_FOUND)
+    let dados = fs::read(&query.path).map_err(|_| StatusCode::NOT_FOUND)?;
+    String::from_utf8(dados).map_err(|_| StatusCode::UNSUPPORTED_MEDIA_TYPE)
 }
 
 // --- UPLOAD E DOWNLOAD ---

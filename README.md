@@ -80,7 +80,7 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 | `GET /` | A interface, servida da memória (embutida no binário). |
 | `GET /vendor/…` | CodeMirror e xterm.js, também embutidos. |
 | `GET /api/files?path=` | Lista uma pasta. |
-| `GET /api/read?path=` | Devolve o arquivo, ou 404 se ele não existir. |
+| `GET /api/read?path=` | Devolve o arquivo como texto: 404 se não existir, 415 se for binário. |
 | `POST /api/save` | Grava o arquivo (texto do editor). |
 | `GET /api/download?path=` | Baixa o arquivo, em fluxo. |
 | `POST /api/upload?path=` | Recebe o arquivo no corpo, em fluxo. |
@@ -112,11 +112,17 @@ A pasta aberta, as pastas expandidas da árvore e o arquivo em edição ficam no
 `localStorage`, então recarregar a página não joga você de volta na raiz.
 
 Para mover arquivos: o 📤 na barra lateral (ou arrastar da sua máquina para
-cima dela) envia para a pasta aberta, e cada arquivo da árvore tem um ⬇ que o
-baixa. Serve para binário, não só texto — o caso comum é tirar da placa o
-executável que o build acabou de gerar. Os dois lados passam em fluxo, sem
-juntar o arquivo inteiro na memória, e o `POST /api/upload` não tem teto de
-tamanho: o que limita é o disco.
+cima dela) envia para a pasta aberta, e o **⬇ Baixar** da barra de cima baixa o
+arquivo aberto. Clicar num binário na árvore o abre como arquivo atual — o
+editor mostra só `Arquivo binário` e o salvar fica desligado, mas o download
+funciona. É assim que se tira da placa o executável que o build acabou de gerar.
+
+Os dois lados passam em fluxo, sem juntar o arquivo inteiro na memória, e o
+`POST /api/upload` não tem teto de tamanho: o que limita é o disco.
+
+A árvore se atualiza sozinha a cada 10s, mas só repinta quando a listagem
+realmente mudou. Sem essa checagem a barra pisca a cada ciclo e você perde a
+seleção de texto e a rolagem.
 
 ## Aviso
 

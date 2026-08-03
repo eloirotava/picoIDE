@@ -105,16 +105,35 @@ def testes_navegador(pw, pasta, falhas):
     except Exception:
         falhas.append("o arquivo enviado pela interface não apareceu na árvore")
 
-    # Download pelo ⬇ da linha do arquivo.
-    linha = page.locator(".linha-arquivo", has_text="enviado.bin").first
+    # Não deve haver download na lista lateral: baixar é só pelo arquivo aberto.
+    if page.locator("#file-list .btn-baixar").count():
+        falhas.append("sobrou botão de baixar na barra lateral")
+
+    # Abrir um binário: o editor não mostra o conteúdo, mas o arquivo passa a
+    # ser o arquivo aberto — é o que torna o download possível.
+    page.click("#file-list >> text=enviado.bin")
+    page.wait_for_function(
+        "() => document.getElementById('current-file').textContent.includes('binário')",
+        timeout=15000)
+
+    if page.evaluate("() => document.querySelector('.CodeMirror').CodeMirror.getValue()") \
+            != "Arquivo binário":
+        falhas.append("o editor não avisou que o arquivo é binário")
+    if not page.locator("#btn-salvar").is_disabled():
+        falhas.append("salvar continuou habilitado num binário: gravaria texto por cima")
+
     try:
         with page.expect_download(timeout=20000) as info:
-            linha.locator(".btn-baixar").click()
+            page.click("#btn-baixar-atual")
         baixado = pathlib.Path(info.value.path())
         if baixado.read_bytes() != (pasta / "enviado.bin").read_bytes():
-            falhas.append("o download pela interface veio diferente do arquivo")
+            falhas.append("o download do binário veio diferente do arquivo")
     except Exception as e:
         falhas.append(f"o botão de baixar não disparou download: {e}")
+
+    # O binário no disco não pode ter sido tocado por autosave.
+    if (pasta / "enviado.bin").stat().st_size != TAMANHO:
+        falhas.append("o binário foi alterado depois de aberto no editor")
 
     if erros:
         falhas.append(f"erros de JS na página: {erros}")
@@ -122,7 +141,7 @@ def testes_navegador(pw, pasta, falhas):
         falhas.append(f"a página buscou recurso fora do servidor: {externas}")
 
     navegador.close()
-    print("OK: a interface envia pelo seletor e baixa pelo botão da linha")
+    print("OK: envia pelo seletor, abre binário sem corrompê-lo e baixa pelo arquivo aberto")
 
 
 if __name__ == "__main__":
