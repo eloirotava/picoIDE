@@ -10,7 +10,7 @@ if [ ! -f "${PICOIDE_BIN:-../../target/debug/meu-mini-ide}" ]; then
 fi
 
 falhou=0
-for teste in test_terminal.py test_sessao.py test_arquivos.py test_arvore.py test_abas.py test_persistencia.py test_reconexao.py; do
+for teste in test_terminal.py test_sessao.py test_arquivos.py test_arvore.py test_abas.py test_subpasta.py test_persistencia.py test_reconexao.py; do
   echo
   echo "=============== $teste ==============="
   if ! python3 "$teste"; then

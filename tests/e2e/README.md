@@ -10,6 +10,7 @@ a um F5 e o terminal não cair sozinho.
 | `test_arquivos.py` | Upload e download preservam o arquivo byte a byte (3 MB aleatórios), nome com acento sobrevive ao cabeçalho HTTP, os erros dão o código certo, e abrir um binário permite baixá-lo sem que o autosave o corrompa. |
 | `test_arvore.py` | O refresh automático não repinta a árvore quando nada mudou (é o que fazia a barra piscar), mas continua mostrando arquivo novo — na raiz e dentro de subpasta aberta. |
 | `test_abas.py` | Dois arquivos abertos não compartilham texto, o autosave grava no que foi editado mesmo depois de trocar de aba, dois terminais são sessões distintas, fechar um não derruba o outro, as duas listas de abas voltam depois do reload, e selecionar no terminal já copia sem que o Ctrl+C deixe de interromper. |
+| `test_subpasta.py` | Sobe um proxy que imita o `route /picoide*` + `strip_prefix` do Caddy — inclusive recusando o que cai fora do prefixo — e confere que assets, API e WebSocket funcionam servidos em `/picoide/`. |
 | `test_persistencia.py` | Depois de um reload voltam a pasta, a árvore expandida, o arquivo aberto e o conteúdo no editor — e o terminal é o mesmo shell de antes, com variável e histórico intactos. |
 | `test_reconexao.py` | Derruba o servidor de verdade e confere que o terminal reconecta sozinho; e que um `exit` não vira laço de reconexão. |
 

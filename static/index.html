@@ -3,27 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <title>Pico IDE</title>
-    <link rel="icon" type="image/svg+xml" href="/icone.svg">
+    <link rel="icon" type="image/svg+xml" href="icone.svg">
     
     <!-- Tudo em /vendor vem embutido no executável, não de CDN: a placa pode
          estar sem internet, e aí não haveria editor nem terminal. -->
-    <link rel="stylesheet" href="/vendor/codemirror/lib/codemirror.css">
-    <link rel="stylesheet" href="/vendor/codemirror/theme/dracula.css">
-    <script src="/vendor/codemirror/lib/codemirror.js"></script>
+    <link rel="stylesheet" href="vendor/codemirror/lib/codemirror.css">
+    <link rel="stylesheet" href="vendor/codemirror/theme/dracula.css">
+    <script src="vendor/codemirror/lib/codemirror.js"></script>
     <!-- O modo rust usa defineSimpleMode, que vem neste addon: sem ele o
          realce de .rs quebra silenciosamente. -->
-    <script src="/vendor/codemirror/addon/mode/simple.js"></script>
-    <script src="/vendor/codemirror/mode/javascript/javascript.js"></script>
-    <script src="/vendor/codemirror/mode/rust/rust.js"></script>
+    <script src="vendor/codemirror/addon/mode/simple.js"></script>
+    <script src="vendor/codemirror/mode/javascript/javascript.js"></script>
+    <script src="vendor/codemirror/mode/rust/rust.js"></script>
     <!-- htmlmixed depende de xml + css + javascript -->
-    <script src="/vendor/codemirror/mode/xml/xml.js"></script>
-    <script src="/vendor/codemirror/mode/css/css.js"></script>
-    <script src="/vendor/codemirror/mode/htmlmixed/htmlmixed.js"></script>
-    <script src="/vendor/codemirror/mode/toml/toml.js"></script>
+    <script src="vendor/codemirror/mode/xml/xml.js"></script>
+    <script src="vendor/codemirror/mode/css/css.js"></script>
+    <script src="vendor/codemirror/mode/htmlmixed/htmlmixed.js"></script>
+    <script src="vendor/codemirror/mode/toml/toml.js"></script>
 
-    <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" />
-    <script src="/vendor/xterm/lib/xterm.js"></script>
-    <script src="/vendor/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <link rel="stylesheet" href="vendor/xterm/css/xterm.css" />
+    <script src="vendor/xterm/lib/xterm.js"></script>
+    <script src="vendor/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
 
     <style>
         body { margin: 0; padding: 0; background-color: #1e1e1e; color: #ccc; font-family: sans-serif; display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 1fr 300px; height: 100vh; overflow: hidden; }
@@ -97,6 +97,23 @@
     </div>
 
     <script>
+        // --- ENDEREÇOS ---
+        // Tudo é montado a partir da pasta em que a página foi servida, e não
+        // da raiz do site. É isso que permite rodar atrás de um proxy em
+        // subpasta (https://host/picoide/) sem o servidor saber o prefixo: o
+        // Caddy tira o /picoide e o picoIDE continua vendo /api/... normal.
+        const BASE = new URL('.', location.href);
+
+        function url(caminho) {
+            return new URL(caminho, BASE).toString();
+        }
+
+        function urlWs(caminho) {
+            const u = new URL(caminho, BASE);
+            u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return u.toString();
+        }
+
         // --- MEMÓRIA DE SESSÃO (sobrevive ao F5) ---
         const CHAVES = {
             raiz: 'picoide.rootPath',
@@ -286,7 +303,7 @@
                 elementoPai.innerHTML = 'Carregando...';
             }
             
-            const res = await fetch(`/api/files?path=${encodeURIComponent(caminho)}`);
+            const res = await fetch(url(`api/files?path=${encodeURIComponent(caminho)}`));
             const files = await res.json();
 
             // Guarda os nomes da pasta aberta para o upload conseguir avisar
@@ -378,7 +395,7 @@
         // barra de progresso e sem passar o arquivo pela memória do JS.
         function baixarArquivo(caminho) {
             const a = document.createElement('a');
-            a.href = `/api/download?path=${encodeURIComponent(caminho)}`;
+            a.href = url(`api/download?path=${encodeURIComponent(caminho)}`);
             a.download = '';
             document.body.appendChild(a);
             a.click();
@@ -414,7 +431,7 @@
                 avisar(`Enviando ${arquivo.name}...`);
                 try {
                     const res = await fetch(
-                        `/api/upload?path=${encodeURIComponent(base + arquivo.name)}`,
+                        url(`api/upload?path=${encodeURIComponent(base + arquivo.name)}`),
                         { method: 'POST', body: arquivo });
                     if (!res.ok) {
                         avisar(`Falhou ${arquivo.name}: ${await res.text()}`);
@@ -459,7 +476,7 @@
             const existente = abertos.findIndex(a => a.path === caminho);
             if (existente >= 0) { ativarAba(existente); return; }
 
-            const res = await fetch(`/api/read?path=${encodeURIComponent(caminho)}`);
+            const res = await fetch(url(`api/read?path=${encodeURIComponent(caminho)}`));
 
             if (res.status === 415) {
                 // Binário: o editor não tem o que mostrar, mas o arquivo é
@@ -494,7 +511,7 @@
             const eraOAtivo = abertos[abaAtiva] === alvo;
             if (eraOAtivo) btnSalvar.textContent = isAuto ? "Autosalvando..." : "Salvando...";
 
-            await fetch('/api/save', {
+            await fetch(url('api/save'), {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: alvo.path, content: alvo.doc.getValue() })
             });
@@ -667,7 +684,7 @@
             // página, aqui a intenção é matar o shell, não deixá-lo rodando.
             if (t.sessao) {
                 try {
-                    await fetch(`/api/terminal/encerrar?sessao=${encodeURIComponent(t.sessao)}`,
+                    await fetch(url(`api/terminal/encerrar?sessao=${encodeURIComponent(t.sessao)}`),
                                 { method: 'POST' });
                 } catch (e) { /* servidor fora do ar; a aba fecha do mesmo jeito */ }
             }
@@ -687,14 +704,13 @@
         }
 
         function conectar(t) {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             // Manda a pasta atual para o shell nascer nela, e não na raiz.
             const cwd = encodeURIComponent(inputRaiz.value || '/');
             // O cwd só vale para shell novo; reatando, o servidor ignora e o
             // shell continua na pasta onde ele já estava.
-            let url = `${protocol}//${window.location.host}/api/ws?cwd=${cwd}`;
-            if (t.sessao) url += `&sessao=${encodeURIComponent(t.sessao)}`;
-            t.ws = new WebSocket(url);
+            let caminho = `api/ws?cwd=${cwd}`;
+            if (t.sessao) caminho += `&sessao=${encodeURIComponent(t.sessao)}`;
+            t.ws = new WebSocket(urlWs(caminho));
 
             t.ws.onopen = () => {
                 t.encerrado = false;

@@ -120,6 +120,38 @@ playwright install chromium
 
 Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 
+## Atrás de um proxy reverso
+
+Funciona tanto na raiz de um host quanto numa subpasta. Todos os endereços da
+interface são montados a partir da pasta em que a página foi servida, então o
+servidor não precisa saber o prefixo — quem o remove é o proxy.
+
+```caddy
+la.rotava.com {
+    basic_auth {
+        eloi $2a$14$...
+    }
+
+    # A barra final é obrigatória: sem ela o navegador resolve os endereços
+    # relativos a partir da raiz do site e nada é encontrado.
+    redir /picoide /picoide/
+
+    route /picoide/* {
+        uri strip_prefix /picoide
+        reverse_proxy 10.0.3.174:8080
+    }
+}
+```
+
+Dois tropeços comuns:
+
+- **O prefixo do `strip_prefix` tem de ser o mesmo do `route`.** Se não bater,
+  o picoIDE recebe `/picoide/...`, rota que ele não tem, e responde 404 — o que
+  parece "o proxy não está chegando no servidor".
+- **Basic auth atrapalha o WebSocket:** nem todo navegador manda o header
+  `Authorization` no handshake. Se a página abrir mas o terminal ficar em
+  "Conexão perdida", é por aí. Autenticação por cookie se dá melhor com WS.
+
 ## Como funciona
 
 | Rota | O que faz |
