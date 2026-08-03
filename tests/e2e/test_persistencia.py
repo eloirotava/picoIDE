@@ -1,7 +1,11 @@
 """Recarregar a página não pode jogar o usuário de volta na raiz.
 
 Abre uma pasta, expande a árvore, abre um arquivo, dá F5 e confere que tudo
-voltou: pasta, árvore, arquivo, conteúdo no editor e a pasta do terminal.
+voltou: pasta, árvore, arquivo e conteúdo no editor.
+
+O terminal tem exigência mais forte que "abriu na pasta certa": ele precisa ser
+o MESMO shell de antes do reload, com o estado intacto e o histórico de volta na
+tela. É o que garante que uma compilação não morre quando a aba recarrega.
 """
 
 from playwright.sync_api import sync_playwright
@@ -38,6 +42,13 @@ def run(pw):
         "() => document.getElementById('current-file').textContent === 'README.md'",
         timeout=15000)
 
+    # Marca o shell: uma variável (só existe neste processo) e uma linha na
+    # tela (só existe neste histórico). Um shell novo não teria nem uma nem outra.
+    digitar(page, "MARCA_SESSAO=sobreviveu\r")
+    page.wait_for_timeout(800)
+    digitar(page, "echo LINHA_ANTES_DO_RELOAD\r")
+    page.wait_for_timeout(1500)
+
     print("antes do reload -> pasta:", page.input_value("#root-path-input"),
           "| arquivo:", page.text_content("#current-file"))
 
@@ -45,12 +56,11 @@ def run(pw):
     page.wait_for_selector("#file-list .file-item", timeout=20000)
     page.wait_for_timeout(2500)
 
+    # A variável só responde se for o mesmo processo do shell.
+    historico = ler_terminal(page)
+    digitar(page, "echo VALOR=$MARCA_SESSAO\r")
+    page.wait_for_timeout(2500)
     terminal = ler_terminal(page)
-    if PASTA not in terminal:
-        # o prompt pode estar abreviado; conferimos com um pwd explícito
-        digitar(page, "pwd\r")
-        page.wait_for_timeout(2500)
-        terminal = ler_terminal(page)
 
     pasta = page.input_value("#root-path-input")
     arquivo = page.text_content("#current-file")
@@ -72,8 +82,14 @@ def run(pw):
         falhas.append(f"o arquivo aberto não foi restaurado: {arquivo!r}")
     if "picoIDE" not in editor:
         falhas.append(f"o editor ficou sem o conteúdo do arquivo: {editor[:80]!r}")
-    if PASTA not in terminal:
-        falhas.append(f"o terminal não abriu na pasta salva:\n{terminal[-400:]}")
+    if "VALOR=sobreviveu" not in terminal:
+        falhas.append(
+            "o terminal virou um shell novo no reload (a variável se perdeu):\n"
+            f"{terminal[-400:]}")
+    if "LINHA_ANTES_DO_RELOAD" not in historico:
+        falhas.append(
+            "o histórico da sessão não voltou na tela depois do reload:\n"
+            f"{historico[-400:]}")
     if erros:
         falhas.append(f"erros de JS na página: {erros}")
     if externas:

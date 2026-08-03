@@ -69,7 +69,8 @@
         const CHAVES = {
             raiz: 'picoide.rootPath',
             pastas: 'picoide.openFolders',
-            arquivo: 'picoide.currentFile'
+            arquivo: 'picoide.currentFile',
+            sessao: 'picoide.terminalSession'
         };
 
         function lerMemoria(chave, padrao) {
@@ -283,6 +284,9 @@
         let ws = null;
         let tentativasReconexao = 0;
         let shellEncerrado = false;
+        // O id da sessão de terminal mora aqui: é ele que faz o shell (e a
+        // compilação rodando nele) sobreviver a fechar a aba.
+        let sessaoTerminal = lerMemoria(CHAVES.sessao, null);
 
         function sincronizarTamanhoTerminal() {
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -294,25 +298,53 @@
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             // Manda a pasta atual para o shell nascer nela, e não na raiz.
             const cwd = encodeURIComponent(inputRaiz.value || '/');
-            ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?cwd=${cwd}`);
+            // O cwd só vale para shell novo; reatando, o servidor ignora e o
+            // shell continua na pasta onde ele já estava.
+            let url = `${protocol}//${window.location.host}/api/ws?cwd=${cwd}`;
+            if (sessaoTerminal) {
+                url += `&sessao=${encodeURIComponent(sessaoTerminal)}`;
+            }
+            ws = new WebSocket(url);
 
             ws.onopen = () => {
-                const mensagem = tentativasReconexao > 0
-                    ? '\r\n\x1b[32m[Pico IDE] Reconectado.\x1b[0m\r\n'
-                    : '\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n';
-                tentativasReconexao = 0;
                 shellEncerrado = false;
-                term.write(mensagem);
                 fitAddon.fit();
                 sincronizarTamanhoTerminal();
             };
+
+            // O servidor abre a conversa dizendo qual sessão nos coube, e só
+            // depois manda o histórico e a saída ao vivo.
+            function tratarAnuncio(texto) {
+                let msg;
+                try { msg = JSON.parse(texto); } catch (e) { return false; }
+                if (!msg || msg.type !== 'sessao') return false;
+
+                sessaoTerminal = msg.id;
+                gravarMemoria(CHAVES.sessao, sessaoTerminal);
+
+                if (msg.reatou) {
+                    // Limpa antes de repintar: o histórico que vem a seguir é
+                    // a tela inteira da sessão, e sem isso ela sairia duplicada
+                    // por cima do que já estava aqui.
+                    term.reset();
+                    term.write(tentativasReconexao > 0
+                        ? '\x1b[32m[Pico IDE] Reconectado.\x1b[0m\r\n'
+                        : '\x1b[32m[Pico IDE] Sessão retomada.\x1b[0m\r\n');
+                } else {
+                    term.write(tentativasReconexao > 0
+                        ? '\r\n\x1b[32m[Pico IDE] Reconectado (shell novo).\x1b[0m\r\n'
+                        : '\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n');
+                }
+                tentativasReconexao = 0;
+                return true;
+            }
 
             ws.onmessage = (evt) => {
                 if (evt.data instanceof Blob) {
                     evt.data.arrayBuffer().then(buf => term.write(new Uint8Array(buf)));
                 } else if (evt.data instanceof ArrayBuffer) {
                     term.write(new Uint8Array(evt.data));
-                } else {
+                } else if (!tratarAnuncio(evt.data)) {
                     term.write(evt.data);
                 }
             };
@@ -322,6 +354,10 @@
                 // reconectar sozinho só abriria um shell novo sem você pedir.
                 if (evt.wasClean) {
                     shellEncerrado = true;
+                    // A sessão morreu de verdade: esquecer o id, senão a
+                    // próxima visita tentaria reatar num shell que não existe.
+                    sessaoTerminal = null;
+                    gravarMemoria(CHAVES.sessao, null);
                     term.write('\r\n\x1b[33m[Pico IDE] Sessão encerrada. Aperte Enter para abrir um shell novo.\x1b[0m\r\n');
                     return;
                 }

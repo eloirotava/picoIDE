@@ -82,12 +82,29 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 | `GET /api/files?path=` | Lista uma pasta. |
 | `GET /api/read?path=` | Devolve o arquivo, ou 404 se ele não existir. |
 | `POST /api/save` | Grava o arquivo. |
-| `GET /api/ws?cwd=` | Terminal via websocket, com o shell nascendo em `cwd`. |
+| `GET /api/ws?cwd=&sessao=` | Terminal via websocket. `cwd` é onde um shell novo nasce; `sessao` reata numa sessão existente. |
 
 O terminal é um PTY de verdade (`portable-pty`) ligado ao xterm.js pelo
 websocket. O servidor manda Ping a cada 20s para proxies reversos não
 derrubarem a conexão por inatividade, e o navegador reconecta sozinho com
 espera crescente se a conexão cair.
+
+As sessões de terminal vivem no servidor, não no websocket: **fechar a aba não
+mata o que está rodando**. Deixe um `cargo build` em andamento, feche a página,
+volte depois — o shell é o mesmo, com o estado e o histórico recente (256 KB) de
+volta na tela. O navegador guarda o id da sessão no `localStorage` e reata com
+ele; um id desconhecido (servidor reiniciado) simplesmente abre um shell novo.
+
+Duas consequências que valem saber:
+
+- Um shell persistente mantém a pasta **dele**. Mudar a pasta na barra lateral
+  não move um terminal que já existe — o `cwd` só vale para shell novo.
+- Um `exit` encerra a sessão de vez, e aí sim o próximo acesso ganha um shell
+  novo.
+
+O teto é de 16 sessões simultâneas. Ao estourar, as mais antigas **sem ninguém
+conectado** são recicladas; uma sessão em uso, ou com build rodando e a aba
+fechada, nunca é derrubada por baixo do usuário.
 
 A pasta aberta, as pastas expandidas da árvore e o arquivo em edição ficam no
 `localStorage`, então recarregar a página não joga você de volta na raiz.

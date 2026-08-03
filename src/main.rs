@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as ParamCaminho, Query,
+        Path as ParamCaminho, Query, State,
     },
     http::{header, StatusCode},
     response::{Html, IntoResponse},
@@ -9,19 +9,58 @@ use axum::{
     Json, Router,
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     io::{Read, Write},
     net::SocketAddr,
     path::Path,
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
 };
+use tokio::sync::{broadcast, mpsc};
 
 // Proxies reversos (nginx, Cloudflare, etc) matam a conexão quando o SERVIDOR
 // fica um tempo sem mandar nada. Um Ping periódico mantém o túnel vivo.
 const INTERVALO_KEEPALIVE: Duration = Duration::from_secs(20);
+
+// Quanto da saída fica guardado para quem reata ver o que passou enquanto a
+// aba esteve fechada. 256 KB cobre bem a cauda de um build sem inchar a RAM
+// da placa.
+const SCROLLBACK_MAX: usize = 256 * 1024;
+
+// Teto de shells simultâneos. Sem isso, cada navegador que perde o id deixaria
+// um shell para trás e a placa acabaria sem memória.
+const MAX_SESSOES: usize = 16;
+
+// Uma sessão de terminal: vive no servidor, independente de qualquer websocket.
+struct Sessao {
+    entrada: mpsc::UnboundedSender<Vec<u8>>,
+    master: Mutex<Box<dyn MasterPty + Send>>,
+    processo: Mutex<Box<dyn Child + Send + Sync>>,
+    saida: broadcast::Sender<Vec<u8>>,
+    scrollback: Mutex<Vec<u8>>,
+    viva: AtomicBool,
+    clientes: AtomicUsize,
+    criada: Instant,
+}
+
+impl Sessao {
+    fn encerrar(&self) {
+        self.viva.store(false, Ordering::SeqCst);
+        if let Ok(mut processo) = self.processo.lock() {
+            let _ = processo.kill();
+            let _ = processo.wait();
+        }
+    }
+}
+
+type Registro = Arc<Mutex<HashMap<String, Arc<Sessao>>>>;
 
 #[derive(Serialize)]
 struct FileNode { name: String, path: String, is_dir: bool }
@@ -32,9 +71,11 @@ struct FileQuery { path: Option<String> }
 #[derive(Deserialize)]
 struct ReadQuery { path: String }
 
-// Pasta onde o shell deve nascer, para o terminal não voltar pra raiz a cada recarregada.
+// "cwd" é a pasta onde um shell NOVO nasce. "sessao" é o id de uma sessão já
+// existente para reatar — quando ele vem, o cwd é ignorado, porque o shell
+// mantém a pasta em que ele já está.
 #[derive(Deserialize)]
-struct TerminalQuery { cwd: Option<String> }
+struct TerminalQuery { cwd: Option<String>, sessao: Option<String> }
 
 #[derive(Deserialize)]
 struct SaveRequest { path: String, content: String }
@@ -49,6 +90,8 @@ enum WsTerminalMessage {
 
 #[tokio::main]
 async fn main() {
+    let registro: Registro = Arc::new(Mutex::new(HashMap::new()));
+
     let app = Router::new()
         // Servindo o HTML direto da memória RAM!
         .route("/", get(serve_index))
@@ -56,7 +99,8 @@ async fn main() {
         .route("/api/files", get(list_files))
         .route("/api/read", get(read_file))
         .route("/api/save", post(save_file))
-        .route("/api/ws", get(ws_handler));
+        .route("/api/ws", get(ws_handler))
+        .with_state(registro);
 
     let porta = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], porta));
@@ -113,8 +157,15 @@ async fn serve_vendor(ParamCaminho(caminho): ParamCaminho<String>) -> Result<imp
 }
 
 // --- TERMINAL ---
-async fn ws_handler(ws: WebSocketUpgrade, Query(query): Query<TerminalQuery>) -> axum::response::Response {
-    ws.on_upgrade(move |socket| handle_terminal(socket, query.cwd))
+// As sessões vivem no servidor, não no websocket: fechar a aba não pode matar
+// uma compilação em andamento. O navegador guarda o id e reata na volta,
+// recebendo de saída o que passou enquanto esteve fora.
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Query(query): Query<TerminalQuery>,
+    State(registro): State<Registro>,
+) -> axum::response::Response {
+    ws.on_upgrade(move |socket| handle_terminal(socket, query, registro))
 }
 
 // Usa o shell de login do usuário quando ele existir; cai pro "sh" se não.
@@ -125,9 +176,46 @@ fn shell_do_sistema() -> String {
     }
 }
 
-async fn handle_terminal(socket: WebSocket, cwd: Option<String>) {
-    let pty_system = NativePtySystem::default();
-    let pair = pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+fn novo_id() -> String {
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}{:x}", t, n)
+}
+
+// Mata as sessões órfãs mais antigas quando o teto é atingido. Sem isso, cada
+// navegador novo (ou aba anônima) deixaria um shell para trás para sempre.
+// Só entra em quem não tem ninguém conectado: uma sessão sendo usada, ou com
+// build rodando e a aba fechada, não pode ser reciclada por baixo do usuário.
+fn garantir_espaco(mapa: &mut HashMap<String, Arc<Sessao>>) {
+    while mapa.len() >= MAX_SESSOES {
+        let alvo = mapa
+            .iter()
+            .filter(|(_, s)| s.clientes.load(Ordering::SeqCst) == 0)
+            .min_by_key(|(_, s)| s.criada)
+            .map(|(id, _)| id.clone());
+
+        match alvo {
+            Some(id) => {
+                if let Some(s) = mapa.remove(&id) {
+                    s.encerrar();
+                }
+            }
+            // Todas ocupadas: melhor deixar passar do teto do que derrubar
+            // sessão de alguém.
+            None => break,
+        }
+    }
+}
+
+fn criar_sessao(registro: &Registro, cwd: Option<String>) -> Result<(String, Arc<Sessao>), String> {
+    let sistema = NativePtySystem::default();
+    let par = sistema
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
 
     let mut cmd = CommandBuilder::new(shell_do_sistema());
     // Sem TERM o xterm.js não recebe as sequências de cor/cursor corretas.
@@ -137,36 +225,157 @@ async fn handle_terminal(socket: WebSocket, cwd: Option<String>) {
         cmd.cwd(dir);
     }
 
-    let mut child = pair.slave.spawn_command(cmd).unwrap();
-    // Precisa soltar o slave aqui: enquanto o processo pai segurar essa ponta do
-    // PTY, o read() no master nunca retorna quando o shell morre, e a conexão
-    // ficaria pendurada para sempre.
-    drop(pair.slave);
+    let processo = par.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    // Precisa soltar o slave aqui: enquanto o processo pai segurar essa ponta
+    // do PTY, o read() no master nunca retorna quando o shell morre, e a
+    // sessão ficaria pendurada para sempre.
+    drop(par.slave);
 
-    let mut pty_reader = pair.master.try_clone_reader().unwrap();
-    let mut pty_writer = pair.master.take_writer().unwrap();
-    let master = pair.master;
+    let mut leitor = par.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let mut escritor = par.master.take_writer().map_err(|e| e.to_string())?;
 
-    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let (tx_entrada, mut rx_entrada) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx_saida, _) = broadcast::channel::<Vec<u8>>(1024);
 
-    // O canal carrega Message em vez de bytes crus, para o keepalive poder
-    // compartilhar o mesmo sender do PTY sem brigar por ele.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(32);
+    let sessao = Arc::new(Sessao {
+        entrada: tx_entrada,
+        master: Mutex::new(par.master),
+        processo: Mutex::new(processo),
+        saida: tx_saida,
+        scrollback: Mutex::new(Vec::new()),
+        viva: AtomicBool::new(true),
+        clientes: AtomicUsize::new(0),
+        criada: Instant::now(),
+    });
 
-    let tx_pty = tx.clone();
+    let id = novo_id();
+
+    // O teclado chega por canal em vez de escrever direto no PTY, para nenhum
+    // cliente segurar o lock da sessão enquanto o write bloqueia.
+    std::thread::spawn(move || {
+        while let Some(dados) = rx_entrada.blocking_recv() {
+            if escritor.write_all(&dados).is_err() {
+                break;
+            }
+            let _ = escritor.flush();
+        }
+    });
+
+    // Esta thread é a dona da sessão: roda enquanto o shell viver, tenha ou
+    // não alguém conectado. É o que faz a compilação sobreviver ao F5.
+    let s = sessao.clone();
+    let reg = registro.clone();
+    let id_thread = id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
-            match pty_reader.read(&mut buf) {
+            match leitor.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if tx_pty.blocking_send(Message::Binary(buf[..n].to_vec())).is_err() { return; }
+                    let pedaco = buf[..n].to_vec();
+                    // Guardar e transmitir sob o mesmo lock evita que quem
+                    // está reatando perca um pedaço, ou o receba duas vezes,
+                    // por ele ter chegado entre a cópia e a inscrição.
+                    let mut historico = s.scrollback.lock().unwrap();
+                    historico.extend_from_slice(&pedaco);
+                    if historico.len() > SCROLLBACK_MAX {
+                        let sobra = historico.len() - SCROLLBACK_MAX;
+                        historico.drain(..sobra);
+                    }
+                    let _ = s.saida.send(pedaco);
                 }
             }
         }
-        // Shell terminou (exit/Ctrl+D): avisa o navegador para ele não ficar
-        // reconectando achando que foi queda de rede.
-        let _ = tx_pty.blocking_send(Message::Close(None));
+
+        // Shell terminou (exit/Ctrl+D): a sessão morre de vez.
+        s.viva.store(false, Ordering::SeqCst);
+        let _ = s.saida.send(Vec::new()); // sentinela de fim para quem estiver ouvindo
+        reg.lock().unwrap().remove(&id_thread);
+        s.encerrar();
+    });
+
+    Ok((id, sessao))
+}
+
+// Reata na sessão pedida quando ela ainda existe; senão abre uma nova. Um id
+// desconhecido (servidor reiniciado, sessão encerrada) não é erro: cai no
+// caminho de criar, que é o que o usuário espera ao voltar na página.
+fn resolver_sessao(
+    registro: &Registro,
+    query: TerminalQuery,
+) -> Result<(String, Arc<Sessao>, bool), String> {
+    if let Some(id) = query.sessao.as_deref() {
+        let existente = registro.lock().unwrap().get(id).cloned();
+        if let Some(s) = existente {
+            if s.viva.load(Ordering::SeqCst) {
+                return Ok((id.to_string(), s, true));
+            }
+        }
+    }
+
+    let (id, sessao) = criar_sessao(registro, query.cwd)?;
+    let mut mapa = registro.lock().unwrap();
+    garantir_espaco(&mut mapa);
+    mapa.insert(id.clone(), sessao.clone());
+    Ok((id, sessao, false))
+}
+
+async fn handle_terminal(socket: WebSocket, query: TerminalQuery, registro: Registro) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+
+    let (id, sessao, reatou) = match resolver_sessao(&registro, query) {
+        Ok(v) => v,
+        Err(erro) => {
+            let aviso = format!("\r\n[Pico IDE] Não consegui abrir o shell: {}\r\n", erro);
+            let _ = ws_sender.send(Message::Text(aviso)).await;
+            let _ = ws_sender.send(Message::Close(None)).await;
+            return;
+        }
+    };
+
+    sessao.clientes.fetch_add(1, Ordering::SeqCst);
+
+    // O navegador guarda este id para reatar na próxima visita.
+    let anuncio = serde_json::json!({ "type": "sessao", "id": id, "reatou": reatou }).to_string();
+    if ws_sender.send(Message::Text(anuncio)).await.is_err() {
+        sessao.clientes.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+
+    // Cópia do histórico e inscrição sob o mesmo lock (ver a thread leitora).
+    let (historico, mut rx_saida) = {
+        let guarda = sessao.scrollback.lock().unwrap();
+        (guarda.clone(), sessao.saida.subscribe())
+    };
+
+    if !historico.is_empty() && ws_sender.send(Message::Binary(historico)).await.is_err() {
+        sessao.clientes.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
+
+    // O canal carrega Message em vez de bytes crus, para o keepalive poder
+    // compartilhar o mesmo sender da saída do PTY sem brigar por ele.
+    let (tx, mut rx) = mpsc::channel::<Message>(64);
+
+    let tx_saida = tx.clone();
+    let bomba = tokio::spawn(async move {
+        loop {
+            match rx_saida.recv().await {
+                // Vetor vazio é a sentinela de shell encerrado.
+                Ok(dados) if dados.is_empty() => {
+                    let _ = tx_saida.send(Message::Close(None)).await;
+                    break;
+                }
+                Ok(dados) => {
+                    if tx_saida.send(Message::Binary(dados)).await.is_err() {
+                        break;
+                    }
+                }
+                // Cliente lento: perde o atrasado e segue no vivo.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
     });
 
     let keepalive_task = tokio::spawn(async move {
@@ -174,18 +383,25 @@ async fn handle_terminal(socket: WebSocket, cwd: Option<String>) {
         ticker.tick().await; // o primeiro tick dispara na hora, descartamos
         loop {
             ticker.tick().await;
-            if tx.send(Message::Ping(Vec::new())).await.is_err() { break; }
+            if tx.send(Message::Ping(Vec::new())).await.is_err() {
+                break;
+            }
         }
     });
 
     let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let era_close = matches!(msg, Message::Close(_));
-            if ws_sender.send(msg).await.is_err() { break; }
-            if era_close { break; }
+            if ws_sender.send(msg).await.is_err() {
+                break;
+            }
+            if era_close {
+                break;
+            }
         }
     });
 
+    let sessao_rx = sessao.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_receiver.next().await {
             match msg {
@@ -193,11 +409,19 @@ async fn handle_terminal(socket: WebSocket, cwd: Option<String>) {
                     if let Ok(ws_msg) = serde_json::from_str::<WsTerminalMessage>(&text) {
                         match ws_msg {
                             WsTerminalMessage::Input { data } => {
-                                let _ = pty_writer.write_all(data.as_bytes());
-                                let _ = pty_writer.flush();
+                                if sessao_rx.entrada.send(data.into_bytes()).is_err() {
+                                    break;
+                                }
                             }
                             WsTerminalMessage::Resize { cols, rows } => {
-                                let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                                if let Ok(master) = sessao_rx.master.lock() {
+                                    let _ = master.resize(PtySize {
+                                        rows,
+                                        cols,
+                                        pixel_width: 0,
+                                        pixel_height: 0,
+                                    });
+                                }
                             }
                             WsTerminalMessage::Ping => {}
                         }
@@ -215,8 +439,11 @@ async fn handle_terminal(socket: WebSocket, cwd: Option<String>) {
         _ = (&mut recv_task) => send_task.abort(),
     };
     keepalive_task.abort();
-    let _ = child.kill();
-    let _ = child.wait();
+    bomba.abort();
+
+    // Repare no que NÃO acontece aqui: o shell continua vivo. Só largamos a
+    // ponta do websocket; quem estava compilando segue compilando.
+    sessao.clientes.fetch_sub(1, Ordering::SeqCst);
 }
 
 // --- ARQUIVOS ---
