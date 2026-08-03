@@ -81,7 +81,9 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 | `GET /vendor/…` | CodeMirror e xterm.js, também embutidos. |
 | `GET /api/files?path=` | Lista uma pasta. |
 | `GET /api/read?path=` | Devolve o arquivo, ou 404 se ele não existir. |
-| `POST /api/save` | Grava o arquivo. |
+| `POST /api/save` | Grava o arquivo (texto do editor). |
+| `GET /api/download?path=` | Baixa o arquivo, em fluxo. |
+| `POST /api/upload?path=` | Recebe o arquivo no corpo, em fluxo. |
 | `GET /api/ws?cwd=&sessao=` | Terminal via websocket. `cwd` é onde um shell novo nasce; `sessao` reata numa sessão existente. |
 
 O terminal é um PTY de verdade (`portable-pty`) ligado ao xterm.js pelo
@@ -108,6 +110,13 @@ fechada, nunca é derrubada por baixo do usuário.
 
 A pasta aberta, as pastas expandidas da árvore e o arquivo em edição ficam no
 `localStorage`, então recarregar a página não joga você de volta na raiz.
+
+Para mover arquivos: o 📤 na barra lateral (ou arrastar da sua máquina para
+cima dela) envia para a pasta aberta, e cada arquivo da árvore tem um ⬇ que o
+baixa. Serve para binário, não só texto — o caso comum é tirar da placa o
+executável que o build acabou de gerar. Os dois lados passam em fluxo, sem
+juntar o arquivo inteiro na memória, e o `POST /api/upload` não tem teto de
+tamanho: o que limita é o disco.
 
 ## Aviso
 

@@ -36,8 +36,18 @@
         .file-item:hover { background-color: #37373d; }
         .is-dir { font-weight: bold; color: #d7ba7d; }
         .folder-children { border-left: 1px solid #444; margin-left: 10px; padding-left: 5px; }
+        .linha-arquivo { display: flex; align-items: center; gap: 4px; }
+        .linha-arquivo > .nome { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; }
+        /* Visível o bastante para se saber que existe, apagado o bastante para
+           não competir com o nome do arquivo. */
+        .btn-baixar { opacity: 0.35; flex-shrink: 0; padding: 0 4px; }
+        .linha-arquivo:hover .btn-baixar { opacity: 1; }
+        #sidebar.soltando { outline: 2px dashed #0e639c; outline-offset: -2px; }
+        #status-upload:empty { display: none; }
+        #status-upload { padding: 6px 10px; font-size: 12px; color: #d7ba7d; background: #2d2d30; }
         #editor-container { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; }
         #top-bar { background-color: #333; padding: 5px 15px; display: flex; justify-content: space-between; align-items: center; }
+        #btn-baixar-atual { background: #3a3d41; color: #ccc; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; margin-right: 4px; }
         #btn-salvar { background: #0e639c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; transition: background 0.3s ease; }
         .CodeMirror { flex-grow: 1; height: 100%; font-size: 16px; }
         #terminal-container { grid-column: 2; grid-row: 2; background-color: #000; border-top: 1px solid #333; padding: 10px; overflow: hidden; box-sizing: border-box; }
@@ -49,15 +59,21 @@
     <div id="sidebar">
         <div id="sidebar-header">
             <input type="text" id="root-path-input" value="/" title="Digite a pasta e aperte Enter">
+            <button onclick="document.getElementById('input-arquivos').click()" title="Enviar arquivos para esta pasta">📤</button>
             <button onclick="mudarRaiz()" title="Atualizar">🔄</button>
+            <input type="file" id="input-arquivos" multiple hidden>
         </div>
+        <div id="status-upload"></div>
         <div id="file-list">Carregando...</div>
     </div>
 
     <div id="editor-container">
         <div id="top-bar">
             <span id="current-file">Nenhum arquivo aberto</span>
-            <button id="btn-salvar" onclick="salvarArquivo()">Salvar (Ctrl+S)</button>
+            <span>
+                <button id="btn-baixar-atual" onclick="baixarAtual()" title="Baixar o arquivo aberto">⬇</button>
+                <button id="btn-salvar" onclick="salvarArquivo()">Salvar (Ctrl+S)</button>
+            </span>
         </div>
         <textarea id="editor"></textarea>
     </div>
@@ -144,6 +160,13 @@
             
             const res = await fetch(`/api/files?path=${encodeURIComponent(caminho)}`);
             const files = await res.json();
+
+            // Guarda os nomes da pasta aberta para o upload conseguir avisar
+            // antes de sobrescrever algo.
+            if (elementoPai.id === 'file-list') {
+                nomesNaPasta.clear();
+                files.forEach(f => { if (!f.is_dir) nomesNaPasta.add(f.name); });
+            }
             
             // Fragmento de documento permite montar a árvore na memória antes de jogar na tela (zero flicker)
             const fragment = document.createDocumentFragment();
@@ -187,8 +210,24 @@
                         carregarArquivos(f.path, childrenContainer);
                     }
                 } else {
-                    header.textContent = '📄 ' + f.name;
-                    header.onclick = (e) => { e.stopPropagation(); abrirArquivo(f.path, f.name); };
+                    header.className = 'linha-arquivo';
+
+                    const nome = document.createElement('span');
+                    nome.className = 'nome';
+                    nome.textContent = '📄 ' + f.name;
+                    nome.onclick = (e) => { e.stopPropagation(); abrirArquivo(f.path, f.name); };
+
+                    // Baixar por arquivo, e não só o que está aberto no editor:
+                    // o caso comum é tirar da placa um binário que o build
+                    // acabou de gerar, e binário não se abre no editor.
+                    const baixar = document.createElement('span');
+                    baixar.className = 'btn-baixar';
+                    baixar.textContent = '⬇';
+                    baixar.title = 'Baixar ' + f.name;
+                    baixar.onclick = (e) => { e.stopPropagation(); baixarArquivo(f.path); };
+
+                    header.appendChild(nome);
+                    header.appendChild(baixar);
                 }
                 fragment.appendChild(div);
             });
@@ -196,6 +235,87 @@
             elementoPai.innerHTML = '';
             elementoPai.appendChild(fragment);
         }
+
+        // --- UPLOAD E DOWNLOAD ---
+
+        // Um <a download> deixa o próprio navegador cuidar do salvamento, com
+        // barra de progresso e sem passar o arquivo pela memória do JS.
+        function baixarArquivo(caminho) {
+            const a = document.createElement('a');
+            a.href = `/api/download?path=${encodeURIComponent(caminho)}`;
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
+        function baixarAtual() {
+            if (!arquivoAtual) return;
+            baixarArquivo(arquivoAtual);
+        }
+
+        function avisar(texto) {
+            document.getElementById('status-upload').textContent = texto;
+        }
+
+        // Nomes já presentes na pasta aberta, para avisar antes de sobrescrever.
+        const nomesNaPasta = new Set();
+
+        async function enviarArquivos(lista) {
+            const arquivos = Array.from(lista);
+            if (!arquivos.length) return;
+
+            const pasta = inputRaiz.value || '/';
+            const base = pasta.endsWith('/') ? pasta : pasta + '/';
+            let enviados = 0;
+
+            for (const arquivo of arquivos) {
+                if (nomesNaPasta.has(arquivo.name) &&
+                    !confirm(`Já existe "${arquivo.name}" nesta pasta. Substituir?`)) {
+                    continue;
+                }
+
+                avisar(`Enviando ${arquivo.name}...`);
+                try {
+                    const res = await fetch(
+                        `/api/upload?path=${encodeURIComponent(base + arquivo.name)}`,
+                        { method: 'POST', body: arquivo });
+                    if (!res.ok) {
+                        avisar(`Falhou ${arquivo.name}: ${await res.text()}`);
+                        return;
+                    }
+                    enviados++;
+                } catch (e) {
+                    avisar(`Falhou ${arquivo.name}: ${e}`);
+                    return;
+                }
+            }
+
+            avisar(enviados ? `${enviados} arquivo(s) enviado(s).` : '');
+            mudarRaiz();
+            setTimeout(() => avisar(''), 4000);
+        }
+
+        document.getElementById('input-arquivos').addEventListener('change', (e) => {
+            enviarArquivos(e.target.files);
+            e.target.value = '';  // permite reenviar o mesmo arquivo depois
+        });
+
+        // Arrastar da máquina para a barra lateral envia para a pasta aberta.
+        const sidebar = document.getElementById('sidebar');
+        ['dragenter', 'dragover'].forEach(ev => sidebar.addEventListener(ev, (e) => {
+            e.preventDefault();
+            sidebar.classList.add('soltando');
+        }));
+        ['dragleave', 'drop'].forEach(ev => sidebar.addEventListener(ev, (e) => {
+            e.preventDefault();
+            sidebar.classList.remove('soltando');
+        }));
+        sidebar.addEventListener('drop', (e) => {
+            if (e.dataTransfer && e.dataTransfer.files.length) {
+                enviarArquivos(e.dataTransfer.files);
+            }
+        });
 
         async function abrirArquivo(caminho, nome) {
             bloqueiaAutosaveInicial = true;

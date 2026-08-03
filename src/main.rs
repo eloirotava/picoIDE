@@ -1,7 +1,8 @@
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as ParamCaminho, Query, State,
+        DefaultBodyLimit, Path as ParamCaminho, Query, State,
     },
     http::{header, StatusCode},
     response::{Html, IntoResponse},
@@ -23,7 +24,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, mpsc};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{broadcast, mpsc},
+};
+use tokio_util::io::ReaderStream;
 
 // Proxies reversos (nginx, Cloudflare, etc) matam a conexão quando o SERVIDOR
 // fica um tempo sem mandar nada. Um Ping periódico mantém o túnel vivo.
@@ -99,6 +104,11 @@ async fn main() {
         .route("/api/files", get(list_files))
         .route("/api/read", get(read_file))
         .route("/api/save", post(save_file))
+        .route("/api/download", get(download_file))
+        // O limite padrão do axum (2 MB) barraria justamente o caso de uso:
+        // subir um binário para a placa. O corpo vai direto para o disco em
+        // pedaços, então não é a RAM que dita o teto.
+        .route("/api/upload", post(upload_file).layer(DefaultBodyLimit::disable()))
         .route("/api/ws", get(ws_handler))
         .with_state(registro);
 
@@ -470,6 +480,96 @@ async fn list_files(Query(query): Query<FileQuery>) -> Json<Vec<FileNode>> {
 // ao restaurar a última sessão.
 async fn read_file(Query(query): Query<ReadQuery>) -> Result<String, StatusCode> {
     fs::read_to_string(&query.path).map_err(|_| StatusCode::NOT_FOUND)
+}
+
+// --- UPLOAD E DOWNLOAD ---
+// Os dois passam em fluxo, sem juntar o arquivo inteiro na memória: a placa
+// tem pouca RAM e o caso de uso é justamente mover binário de build.
+
+// Nome de arquivo em cabeçalho HTTP não aceita acento cru, e "relatório.pdf"
+// é o caso comum aqui. Mandamos as duas formas: o ASCII para clientes velhos
+// e o filename* (RFC 5987) para os que entendem UTF-8.
+fn escapar_nome(nome: &str) -> String {
+    let mut saida = String::new();
+    for byte in nome.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                saida.push(*byte as char)
+            }
+            _ => saida.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    saida
+}
+
+async fn download_file(Query(query): Query<ReadQuery>) -> Result<impl IntoResponse, StatusCode> {
+    let caminho = std::path::PathBuf::from(&query.path);
+    // Uma pasta aqui viraria um erro de leitura confuso mais adiante.
+    if caminho.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let arquivo = tokio::fs::File::open(&caminho)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let nome = caminho
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("arquivo");
+    let simples: String = nome
+        .chars()
+        .map(|c| if c.is_ascii_graphic() && c != '"' { c } else { '_' })
+        .collect();
+    let disposicao = format!(
+        "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+        simples,
+        escapar_nome(nome)
+    );
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_DISPOSITION, disposicao),
+        ],
+        Body::from_stream(ReaderStream::new(arquivo)),
+    ))
+}
+
+async fn upload_file(
+    Query(query): Query<ReadQuery>,
+    corpo: Body,
+) -> Result<String, (StatusCode, String)> {
+    let caminho = std::path::PathBuf::from(&query.path);
+    if caminho.is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Já existe uma pasta com esse nome.".to_string(),
+        ));
+    }
+
+    let mut arquivo = tokio::fs::File::create(&caminho)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut fluxo = corpo.into_data_stream();
+    let mut total: u64 = 0;
+    while let Some(pedaco) = fluxo.next().await {
+        let pedaco = pedaco.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        arquivo
+            .write_all(&pedaco)
+            .await
+            .map_err(|e| (StatusCode::INSUFFICIENT_STORAGE, e.to_string()))?;
+        total += pedaco.len() as u64;
+    }
+    // Sem o flush, um erro de disco cheio apareceria só no close, e o upload
+    // teria sido reportado como sucesso.
+    arquivo
+        .flush()
+        .await
+        .map_err(|e| (StatusCode::INSUFFICIENT_STORAGE, e.to_string()))?;
+
+    Ok(total.to_string())
 }
 
 async fn save_file(Json(payload): Json<SaveRequest>) -> String {
