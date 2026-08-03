@@ -85,6 +85,7 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 | `GET /api/download?path=` | Baixa o arquivo, em fluxo. |
 | `POST /api/upload?path=` | Recebe o arquivo no corpo, em fluxo. |
 | `GET /api/ws?cwd=&sessao=` | Terminal via websocket. `cwd` é onde um shell novo nasce; `sessao` reata numa sessão existente. |
+| `POST /api/terminal/encerrar?sessao=` | Encerra a sessão de vez (fechar a aba do terminal). |
 
 O terminal é um PTY de verdade (`portable-pty`) ligado ao xterm.js pelo
 websocket. O servidor manda Ping a cada 20s para proxies reversos não
@@ -108,8 +109,16 @@ O teto é de 16 sessões simultâneas. Ao estourar, as mais antigas **sem ningu�
 conectado** são recicladas; uma sessão em uso, ou com build rodando e a aba
 fechada, nunca é derrubada por baixo do usuário.
 
-A pasta aberta, as pastas expandidas da árvore e o arquivo em edição ficam no
-`localStorage`, então recarregar a página não joga você de volta na raiz.
+Dá para abrir **vários arquivos e vários terminais**, cada um na sua aba. Cada
+arquivo tem o seu próprio `Doc` do CodeMirror, então cursor, seleção e histórico
+de desfazer não se misturam ao alternar; e o autosave grava no arquivo que foi
+editado mesmo que você já tenha trocado de aba. Cada terminal é uma sessão
+independente no servidor.
+
+Fechar a aba de um terminal (o `×`) **encerra aquele shell**, diferente de
+fechar a página, que o deixa rodando. As duas listas de abas ficam no
+`localStorage`, junto com a pasta aberta e as pastas expandidas da árvore, então
+recarregar a página não joga você de volta na raiz nem fecha nada.
 
 Para mover arquivos: o 📤 na barra lateral (ou arrastar da sua máquina para
 cima dela) envia para a pasta aberta, e o **⬇ Baixar** da barra de cima baixa o

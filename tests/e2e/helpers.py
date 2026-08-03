@@ -91,8 +91,11 @@ LER_BUFFER = """() => {
     return linhas.join('\\n');
 }"""
 
+# Com várias abas de terminal, as telas inativas continuam montadas: é preciso
+# mirar a que está visível, senão o texto vai para um terminal escondido.
 FOCAR_TERMINAL = """() => {
-    const t = document.querySelector('#terminal-container .xterm-helper-textarea');
+    const t = document.querySelector('.terminal-tela.ativa .xterm-helper-textarea')
+           || document.querySelector('#terminal-container .xterm-helper-textarea');
     if (t) t.focus();
 }"""
 

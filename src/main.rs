@@ -110,6 +110,7 @@ async fn main() {
         // pedaços, então não é a RAM que dita o teto.
         .route("/api/upload", post(upload_file).layer(DefaultBodyLimit::disable()))
         .route("/api/ws", get(ws_handler))
+        .route("/api/terminal/encerrar", post(encerrar_sessao))
         .with_state(registro);
 
     let porta = 8080;
@@ -176,6 +177,26 @@ async fn ws_handler(
     State(registro): State<Registro>,
 ) -> axum::response::Response {
     ws.on_upgrade(move |socket| handle_terminal(socket, query, registro))
+}
+
+// Fechar a aba do terminal encerra a sessão de vez. Sem isso, cada terminal
+// fechado deixaria um shell rodando até o teto de sessões reciclá-lo, e a
+// pessoa não teria como matar um processo que ela mesma iniciou.
+#[derive(Deserialize)]
+struct SessaoQuery { sessao: String }
+
+async fn encerrar_sessao(
+    Query(query): Query<SessaoQuery>,
+    State(registro): State<Registro>,
+) -> StatusCode {
+    let sessao = registro.lock().unwrap().remove(&query.sessao);
+    match sessao {
+        Some(s) => {
+            s.encerrar();
+            StatusCode::OK
+        }
+        None => StatusCode::NOT_FOUND,
+    }
 }
 
 // Usa o shell de login do usuário quando ele existir; cai pro "sh" se não.

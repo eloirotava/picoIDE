@@ -44,8 +44,21 @@
         #btn-baixar-atual { background: #3a3d41; color: #ccc; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; margin-right: 4px; }
         #btn-salvar { background: #0e639c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; transition: background 0.3s ease; }
         .CodeMirror { flex-grow: 1; height: 100%; font-size: 16px; }
-        #terminal-container { grid-column: 2; grid-row: 2; background-color: #000; border-top: 1px solid #333; padding: 10px; overflow: hidden; box-sizing: border-box; }
+        #terminal-container { grid-column: 2; grid-row: 2; background-color: #000; border-top: 1px solid #333; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; }
+        /* Os terminais ficam empilhados no mesmo lugar; só o ativo aparece.
+           Manter os inativos montados (em vez de recriar) preserva a tela e o
+           scrollback de cada um ao trocar de aba. */
+        #telas-terminais { flex-grow: 1; position: relative; overflow: hidden; }
+        .terminal-tela { position: absolute; inset: 0; padding: 10px; box-sizing: border-box; display: none; }
+        .terminal-tela.ativa { display: block; }
         .terminal { height: 100%; }
+        .barra-abas { display: flex; align-items: stretch; background: #252526; border-bottom: 1px solid #333; overflow-x: auto; flex-shrink: 0; }
+        .aba { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: #2d2d30; color: #ccc; border-right: 1px solid #1e1e1e; cursor: pointer; white-space: nowrap; font-size: 13px; user-select: none; }
+        .aba.ativa { background: #1e1e1e; color: #fff; }
+        .aba .fechar { opacity: 0.5; padding: 0 2px; }
+        .aba .fechar:hover { opacity: 1; }
+        .aba .sujo { color: #d7ba7d; }
+        .nova-aba { background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 10px; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -62,6 +75,7 @@
     </div>
 
     <div id="editor-container">
+        <div id="abas-arquivos" class="barra-abas"></div>
         <div id="top-bar">
             <span id="current-file">Nenhum arquivo aberto</span>
             <span>
@@ -72,15 +86,20 @@
         <textarea id="editor"></textarea>
     </div>
 
-    <div id="terminal-container"></div>
+    <div id="terminal-container">
+        <div id="abas-terminais" class="barra-abas"></div>
+        <div id="telas-terminais"></div>
+    </div>
 
     <script>
         // --- MEMÓRIA DE SESSÃO (sobrevive ao F5) ---
         const CHAVES = {
             raiz: 'picoide.rootPath',
             pastas: 'picoide.openFolders',
-            arquivo: 'picoide.currentFile',
-            sessao: 'picoide.terminalSession'
+            arquivo: 'picoide.currentFile',      // legado: um arquivo só
+            arquivos: 'picoide.openFiles',
+            sessao: 'picoide.terminalSession',    // legado: um terminal só
+            terminais: 'picoide.terminals'
         };
 
         function lerMemoria(chave, padrao) {
@@ -101,11 +120,26 @@
             lineNumbers: true, theme: "dracula", mode: "javascript"
         });
 
-        let arquivoAtual = "";
         let timeoutAutosave = null;
         let bloqueiaAutosaveInicial = true;
-        // Binário aberto: dá para baixar, não dá para editar nem salvar.
+
+        // Cada arquivo aberto é uma aba com o seu próprio Doc do CodeMirror.
+        // Guardar o Doc (em vez de só o texto) preserva cursor, seleção e
+        // histórico de desfazer de cada arquivo ao alternar entre eles.
+        const abertos = [];   // { path, name, doc, binario, sujo }
+        let abaAtiva = -1;
+
+        // Mantidos porque o resto da página (download, autosave) pergunta por
+        // eles; são sempre o espelho da aba ativa.
+        let arquivoAtual = "";
         let binarioAberto = false;
+
+        function modoDe(nome) {
+            if (nome.endsWith('.rs')) return "rust";
+            if (nome.endsWith('.html')) return "htmlmixed";
+            if (nome.endsWith('.toml')) return "toml";
+            return "javascript";
+        }
 
         // Baixar só faz sentido com arquivo aberto; salvar, só se for texto.
         function atualizarBotoes() {
@@ -113,18 +147,101 @@
             const salvar = document.getElementById('btn-salvar');
             baixar.disabled = !arquivoAtual;
             baixar.style.opacity = arquivoAtual ? '1' : '0.4';
-            salvar.disabled = binarioAberto;
-            salvar.style.opacity = binarioAberto ? '0.4' : '1';
+            salvar.disabled = binarioAberto || !arquivoAtual;
+            salvar.style.opacity = (binarioAberto || !arquivoAtual) ? '0.4' : '1';
+        }
+
+        function salvarAbas() {
+            gravarMemoria(CHAVES.arquivos, {
+                lista: abertos.map(a => ({ path: a.path, name: a.name })),
+                ativa: abaAtiva
+            });
+        }
+
+        function desenharAbasArquivos() {
+            const barra = document.getElementById('abas-arquivos');
+            barra.innerHTML = '';
+            abertos.forEach((a, i) => {
+                const aba = document.createElement('div');
+                aba.className = 'aba' + (i === abaAtiva ? ' ativa' : '');
+                aba.onclick = () => ativarAba(i);
+
+                const nome = document.createElement('span');
+                nome.textContent = (a.sujo ? '• ' : '') + a.name;
+                if (a.sujo) nome.className = 'sujo';
+                aba.appendChild(nome);
+
+                const fechar = document.createElement('span');
+                fechar.className = 'fechar';
+                fechar.textContent = '×';
+                fechar.title = 'Fechar ' + a.name;
+                fechar.onclick = (e) => { e.stopPropagation(); fecharAba(i); };
+                aba.appendChild(fechar);
+
+                barra.appendChild(aba);
+            });
+        }
+
+        function ativarAba(i) {
+            if (i < 0 || i >= abertos.length) return;
+            const a = abertos[i];
+            abaAtiva = i;
+            arquivoAtual = a.path;
+            binarioAberto = a.binario;
+
+            // swapDoc troca o conteúdo sem recriar o editor, então o Doc de
+            // cada aba continua guardando o seu próprio desfazer.
+            bloqueiaAutosaveInicial = true;
+            editor.swapDoc(a.doc);
+            editor.setOption("mode", modoDe(a.name));
+            editor.setOption("readOnly", a.binario);
+            setTimeout(() => { bloqueiaAutosaveInicial = false; }, 100);
+
+            document.getElementById('current-file').textContent =
+                a.binario ? `${a.name} (binário)` : a.name;
+            const btnSalvar = document.getElementById("btn-salvar");
+            btnSalvar.textContent = "Salvar (Ctrl+S)";
+            btnSalvar.style.background = "#0e639c";
+
+            atualizarBotoes();
+            desenharAbasArquivos();
+            salvarAbas();
+        }
+
+        function fecharAba(i) {
+            if (i < 0 || i >= abertos.length) return;
+            abertos.splice(i, 1);
+
+            if (!abertos.length) {
+                abaAtiva = -1;
+                arquivoAtual = "";
+                binarioAberto = false;
+                editor.swapDoc(CodeMirror.Doc("", "javascript"));
+                editor.setOption("readOnly", false);
+                document.getElementById('current-file').textContent = 'Nenhum arquivo aberto';
+                atualizarBotoes();
+                desenharAbasArquivos();
+                salvarAbas();
+                return;
+            }
+            ativarAba(Math.min(i, abertos.length - 1));
         }
 
         editor.on("change", () => {
-            if (!arquivoAtual || bloqueiaAutosaveInicial || binarioAberto) return;
+            if (abaAtiva < 0 || bloqueiaAutosaveInicial) return;
+            const alvo = abertos[abaAtiva];
+            if (!alvo || alvo.binario) return;
+
+            alvo.sujo = true;
+            desenharAbasArquivos();
             const btnSalvar = document.getElementById("btn-salvar");
             btnSalvar.textContent = "Modificado...";
-            btnSalvar.style.background = "#c77200"; 
-            
+            btnSalvar.style.background = "#c77200";
+
             clearTimeout(timeoutAutosave);
-            timeoutAutosave = setTimeout(() => { salvarArquivo(true); }, 5000);
+            // O alvo vai preso no closure: se você trocar de aba antes dos 5s,
+            // o autosave ainda grava o arquivo que foi editado, não o da vez.
+            timeoutAutosave = setTimeout(() => { salvarArquivoDe(alvo, true); }, 5000);
         });
 
         document.addEventListener("keydown", function(e) {
@@ -332,81 +449,71 @@
         });
 
         async function abrirArquivo(caminho, nome) {
-            bloqueiaAutosaveInicial = true;
-            clearTimeout(timeoutAutosave);
+            // Já aberto: só traz para a frente, sem recarregar do disco (o que
+            // descartaria edições ainda não salvas).
+            const existente = abertos.findIndex(a => a.path === caminho);
+            if (existente >= 0) { ativarAba(existente); return; }
 
             const res = await fetch(`/api/read?path=${encodeURIComponent(caminho)}`);
+
             if (res.status === 415) {
                 // Binário: o editor não tem o que mostrar, mas o arquivo é
-                // real e continua sendo o arquivo aberto — é assim que dá para
+                // real e vira uma aba mesmo assim — é assim que dá para
                 // baixá-lo, que é o único jeito de tirar um build da placa.
-                arquivoAtual = caminho;
-                binarioAberto = true;
-                gravarMemoria(CHAVES.arquivo, { path: caminho, name: nome });
-                document.getElementById('current-file').textContent = `${nome} (binário)`;
-                editor.setValue("Arquivo binário");
-                // readOnly evita o pior caso: digitar por cima e o autosave
-                // gravar este texto em cima do binário.
-                editor.setOption("readOnly", true);
-                atualizarBotoes();
+                abertos.push({
+                    path: caminho, name: nome, binario: true, sujo: false,
+                    doc: CodeMirror.Doc("Arquivo binário", "javascript")
+                });
+                ativarAba(abertos.length - 1);
                 return;
             }
             if (!res.ok) {
-                // Arquivo sumiu: não assume ele como atual, senão o autosave o recriaria.
+                // Arquivo sumiu: não vira aba, senão o autosave o recriaria.
                 document.getElementById('current-file').textContent = `${nome} (não encontrado)`;
-                arquivoAtual = "";
-                binarioAberto = false;
-                editor.setOption("readOnly", false);
-                gravarMemoria(CHAVES.arquivo, null);
-                atualizarBotoes();
                 return;
             }
+
             const texto = await res.text();
-
-            arquivoAtual = caminho;
-            binarioAberto = false;
-            editor.setOption("readOnly", false);
-            gravarMemoria(CHAVES.arquivo, { path: caminho, name: nome });
-            document.getElementById('current-file').textContent = nome;
-            atualizarBotoes();
-
-            const btnSalvar = document.getElementById("btn-salvar");
-            btnSalvar.textContent = "Salvar (Ctrl+S)";
-            btnSalvar.style.background = "#0e639c";
-
-            if(nome.endsWith('.rs')) editor.setOption("mode", "rust");
-            else if(nome.endsWith('.html')) editor.setOption("mode", "htmlmixed");
-            else if(nome.endsWith('.toml')) editor.setOption("mode", "toml");
-            else editor.setOption("mode", "javascript");
-            
-            editor.setValue(texto);
-            setTimeout(() => { bloqueiaAutosaveInicial = false; }, 100);
+            abertos.push({
+                path: caminho, name: nome, binario: false, sujo: false,
+                doc: CodeMirror.Doc(texto, modoDe(nome))
+            });
+            ativarAba(abertos.length - 1);
         }
 
-        async function salvarArquivo(isAuto = false) {
+        async function salvarArquivoDe(alvo, isAuto = false) {
             // Salvar um binário gravaria o texto do aviso por cima dele.
-            if (!arquivoAtual || binarioAberto) return;
+            if (!alvo || alvo.binario) return;
 
             const btnSalvar = document.getElementById("btn-salvar");
-            btnSalvar.textContent = isAuto ? "Autosalvando..." : "Salvando...";
-            
+            const eraOAtivo = abertos[abaAtiva] === alvo;
+            if (eraOAtivo) btnSalvar.textContent = isAuto ? "Autosalvando..." : "Salvando...";
+
             await fetch('/api/save', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: arquivoAtual, content: editor.getValue() })
+                body: JSON.stringify({ path: alvo.path, content: alvo.doc.getValue() })
             });
 
-            btnSalvar.textContent = "Salvo!";
-            btnSalvar.style.background = "#2a7522"; 
-            
+            alvo.sujo = false;
+            desenharAbasArquivos();
+
+            if (eraOAtivo) {
+                btnSalvar.textContent = "Salvo!";
+                btnSalvar.style.background = "#2a7522";
+                setTimeout(() => {
+                    if (btnSalvar.textContent === "Salvo!") {
+                        btnSalvar.textContent = "Salvar (Ctrl+S)";
+                        btnSalvar.style.background = "#0e639c";
+                    }
+                }, 2000);
+            }
+
             // Dispara um refresh silencioso da árvore ao salvar
             mudarRaiz();
-            
-            setTimeout(() => {
-                if (btnSalvar.textContent === "Salvo!") {
-                    btnSalvar.textContent = "Salvar (Ctrl+S)";
-                    btnSalvar.style.background = "#0e639c"; 
-                }
-            }, 2000);
+        }
+
+        function salvarArquivo(isAuto = false) {
+            return salvarArquivoDe(abertos[abaAtiva], isAuto);
         }
 
         // --- GATILHOS DE AUTO-UPDATE ---
@@ -416,11 +523,22 @@
         // Gatilho 1: Início — já na pasta que estava aberta antes do F5
         mudarRaiz();
 
-        // Reabre o arquivo em que você estava trabalhando
-        const ultimoArquivo = lerMemoria(CHAVES.arquivo, null);
-        if (ultimoArquivo && ultimoArquivo.path) {
-            abrirArquivo(ultimoArquivo.path, ultimoArquivo.name);
-        }
+        // Reabre as abas em que você estava trabalhando. O formato antigo
+        // guardava um arquivo só; ler os dois evita perder a aba de quem
+        // atualizou o binário.
+        (async () => {
+            const salvas = lerMemoria(CHAVES.arquivos, null);
+            let lista = salvas && salvas.lista ? salvas.lista : [];
+            if (!lista.length) {
+                const legado = lerMemoria(CHAVES.arquivo, null);
+                if (legado && legado.path) lista = [legado];
+            }
+            for (const a of lista) {
+                if (a && a.path) await abrirArquivo(a.path, a.name);
+            }
+            const ativa = salvas ? salvas.ativa : 0;
+            if (abertos.length && ativa >= 0 && ativa < abertos.length) ativarAba(ativa);
+        })();
 
         // Gatilho 2: Atualização silenciosa a cada 10 segundos, mas apenas se você estiver com a tela ativa
         setInterval(() => {
@@ -429,45 +547,114 @@
             }
         }, 10000);
 
-        // --- TERMINAL ---
-        const term = new Terminal({ 
-            theme: { background: '#000' }, fontFamily: 'monospace', fontSize: 14, cursorBlink: true 
-        });
-        
-        const fitAddon = new FitAddon.FitAddon();
-        term.loadAddon(fitAddon);
-        term.open(document.getElementById('terminal-container'));
-        fitAddon.fit();
+        // --- TERMINAIS ---
+        // O servidor já mantém uma sessão por id; aqui cada aba é uma sessão.
+        // As telas inativas continuam montadas, para trocar de aba não perder
+        // a tela nem o scrollback de nenhuma delas.
+        const terminais = [];   // { term, fit, ws, sessao, tentativas, encerrado, tela }
+        let terminalAtivo = -1;
 
-        let ws = null;
-        let tentativasReconexao = 0;
-        let shellEncerrado = false;
-        // O id da sessão de terminal mora aqui: é ele que faz o shell (e a
-        // compilação rodando nele) sobreviver a fechar a aba.
-        let sessaoTerminal = lerMemoria(CHAVES.sessao, null);
+        function desenharAbasTerminais() {
+            const barra = document.getElementById('abas-terminais');
+            barra.innerHTML = '';
+            terminais.forEach((t, i) => {
+                const aba = document.createElement('div');
+                aba.className = 'aba' + (i === terminalAtivo ? ' ativa' : '');
+                aba.onclick = () => ativarTerminal(i);
 
-        function sincronizarTamanhoTerminal() {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+                const nome = document.createElement('span');
+                nome.textContent = `Terminal ${i + 1}`;
+                aba.appendChild(nome);
+
+                const fechar = document.createElement('span');
+                fechar.className = 'fechar';
+                fechar.textContent = '×';
+                fechar.title = 'Encerrar este terminal';
+                fechar.onclick = (e) => { e.stopPropagation(); fecharTerminal(i); };
+                aba.appendChild(fechar);
+
+                barra.appendChild(aba);
+            });
+
+            const mais = document.createElement('button');
+            mais.className = 'nova-aba';
+            mais.textContent = '+';
+            mais.title = 'Novo terminal';
+            mais.onclick = () => { const i = criarTerminal(null); ativarTerminal(i); };
+            barra.appendChild(mais);
+        }
+
+        function salvarTerminais() {
+            gravarMemoria(CHAVES.terminais, {
+                lista: terminais.map(t => t.sessao).filter(Boolean),
+                ativa: terminalAtivo
+            });
+        }
+
+        function sincronizarTamanho(t) {
+            if (t && t.ws && t.ws.readyState === WebSocket.OPEN) {
+                t.ws.send(JSON.stringify({ type: "resize", cols: t.term.cols, rows: t.term.rows }));
             }
         }
 
-        function conectarTerminal() {
+        function ativarTerminal(i) {
+            if (i < 0 || i >= terminais.length) return;
+            terminalAtivo = i;
+            terminais.forEach((t, j) => t.tela.classList.toggle('ativa', j === i));
+
+            const t = terminais[i];
+            // Os testes e o resto da página falam com o terminal da vez.
+            window.term = t.term;
+            // Só dá para medir o tamanho depois de a tela estar visível.
+            t.fit.fit();
+            sincronizarTamanho(t);
+            t.term.focus();
+
+            desenharAbasTerminais();
+            salvarTerminais();
+        }
+
+        async function fecharTerminal(i) {
+            const t = terminais[i];
+            if (!t) return;
+
+            // Fechar a aba encerra a sessão de vez: diferente de fechar a
+            // página, aqui a intenção é matar o shell, não deixá-lo rodando.
+            if (t.sessao) {
+                try {
+                    await fetch(`/api/terminal/encerrar?sessao=${encodeURIComponent(t.sessao)}`,
+                                { method: 'POST' });
+                } catch (e) { /* servidor fora do ar; a aba fecha do mesmo jeito */ }
+            }
+            if (t.ws) { t.ws.onclose = null; t.ws.close(); }
+            t.term.dispose();
+            t.tela.remove();
+            terminais.splice(i, 1);
+
+            if (!terminais.length) {
+                terminalAtivo = -1;
+                window.term = null;
+                desenharAbasTerminais();
+                salvarTerminais();
+                return;
+            }
+            ativarTerminal(Math.min(i, terminais.length - 1));
+        }
+
+        function conectar(t) {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             // Manda a pasta atual para o shell nascer nela, e não na raiz.
             const cwd = encodeURIComponent(inputRaiz.value || '/');
             // O cwd só vale para shell novo; reatando, o servidor ignora e o
             // shell continua na pasta onde ele já estava.
             let url = `${protocol}//${window.location.host}/api/ws?cwd=${cwd}`;
-            if (sessaoTerminal) {
-                url += `&sessao=${encodeURIComponent(sessaoTerminal)}`;
-            }
-            ws = new WebSocket(url);
+            if (t.sessao) url += `&sessao=${encodeURIComponent(t.sessao)}`;
+            t.ws = new WebSocket(url);
 
-            ws.onopen = () => {
-                shellEncerrado = false;
-                fitAddon.fit();
-                sincronizarTamanhoTerminal();
+            t.ws.onopen = () => {
+                t.encerrado = false;
+                t.fit.fit();
+                sincronizarTamanho(t);
             };
 
             // O servidor abre a conversa dizendo qual sessão nos coube, e só
@@ -477,86 +664,123 @@
                 try { msg = JSON.parse(texto); } catch (e) { return false; }
                 if (!msg || msg.type !== 'sessao') return false;
 
-                sessaoTerminal = msg.id;
-                gravarMemoria(CHAVES.sessao, sessaoTerminal);
+                t.sessao = msg.id;
+                salvarTerminais();
 
                 if (msg.reatou) {
                     // Limpa antes de repintar: o histórico que vem a seguir é
                     // a tela inteira da sessão, e sem isso ela sairia duplicada
                     // por cima do que já estava aqui.
-                    term.reset();
-                    term.write(tentativasReconexao > 0
+                    t.term.reset();
+                    t.term.write(t.tentativas > 0
                         ? '\x1b[32m[Pico IDE] Reconectado.\x1b[0m\r\n'
                         : '\x1b[32m[Pico IDE] Sessão retomada.\x1b[0m\r\n');
                 } else {
-                    term.write(tentativasReconexao > 0
+                    t.term.write(t.tentativas > 0
                         ? '\r\n\x1b[32m[Pico IDE] Reconectado (shell novo).\x1b[0m\r\n'
                         : '\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n');
                 }
-                tentativasReconexao = 0;
+                t.tentativas = 0;
                 return true;
             }
 
-            ws.onmessage = (evt) => {
+            t.ws.onmessage = (evt) => {
                 if (evt.data instanceof Blob) {
-                    evt.data.arrayBuffer().then(buf => term.write(new Uint8Array(buf)));
+                    evt.data.arrayBuffer().then(buf => t.term.write(new Uint8Array(buf)));
                 } else if (evt.data instanceof ArrayBuffer) {
-                    term.write(new Uint8Array(evt.data));
+                    t.term.write(new Uint8Array(evt.data));
                 } else if (!tratarAnuncio(evt.data)) {
-                    term.write(evt.data);
+                    t.term.write(evt.data);
                 }
             };
 
-            ws.onclose = (evt) => {
+            t.ws.onclose = (evt) => {
                 // Fechamento limpo = o shell terminou (exit / Ctrl+D). Nesse caso
                 // reconectar sozinho só abriria um shell novo sem você pedir.
                 if (evt.wasClean) {
-                    shellEncerrado = true;
+                    t.encerrado = true;
                     // A sessão morreu de verdade: esquecer o id, senão a
                     // próxima visita tentaria reatar num shell que não existe.
-                    sessaoTerminal = null;
-                    gravarMemoria(CHAVES.sessao, null);
-                    term.write('\r\n\x1b[33m[Pico IDE] Sessão encerrada. Aperte Enter para abrir um shell novo.\x1b[0m\r\n');
+                    t.sessao = null;
+                    salvarTerminais();
+                    t.term.write('\r\n\x1b[33m[Pico IDE] Sessão encerrada. Aperte Enter para abrir um shell novo.\x1b[0m\r\n');
                     return;
                 }
                 // Queda de rede: volta sozinho, com espera crescente até 10s.
-                const espera = Math.min(1000 * Math.pow(2, tentativasReconexao), 10000);
-                tentativasReconexao++;
-                term.write(`\r\n\x1b[31m[Pico IDE] Conexão perdida. Reconectando em ${espera / 1000}s...\x1b[0m\r\n`);
-                setTimeout(conectarTerminal, espera);
+                const espera = Math.min(1000 * Math.pow(2, t.tentativas), 10000);
+                t.tentativas++;
+                t.term.write(`\r\n\x1b[31m[Pico IDE] Conexão perdida. Reconectando em ${espera / 1000}s...\x1b[0m\r\n`);
+                setTimeout(() => conectar(t), espera);
             };
         }
 
-        conectarTerminal();
+        function criarTerminal(sessao) {
+            const tela = document.createElement('div');
+            tela.className = 'terminal-tela';
+            document.getElementById('telas-terminais').appendChild(tela);
 
-        term.onData(data => {
-            if (shellEncerrado) {
-                // Enter (ou qualquer tecla) reabre a sessão sob demanda.
-                shellEncerrado = false;
-                conectarTerminal();
-                return;
-            }
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "input", data: data }));
+            const term = new Terminal({
+                theme: { background: '#000' }, fontFamily: 'monospace', fontSize: 14, cursorBlink: true
+            });
+            const fit = new FitAddon.FitAddon();
+            term.loadAddon(fit);
+            term.open(tela);
 
-                // Gatilho 3: Se o usuário apertar Enter (\r) no terminal, aguarda meio segundo para
-                // dar tempo do comando do Linux terminar, e atualiza a árvore de arquivos.
-                if (data.includes('\r')) {
-                    setTimeout(mudarRaiz, 500);
+            const t = { term, fit, ws: null, sessao, tentativas: 0, encerrado: false, tela };
+            terminais.push(t);
+
+            term.onData(data => {
+                if (t.encerrado) {
+                    // Enter (ou qualquer tecla) reabre a sessão sob demanda.
+                    t.encerrado = false;
+                    conectar(t);
+                    return;
                 }
+                if (t.ws && t.ws.readyState === WebSocket.OPEN) {
+                    t.ws.send(JSON.stringify({ type: "input", data: data }));
+
+                    // Gatilho 3: Enter no terminal pode ter mexido em arquivo;
+                    // meio segundo depois, atualiza a árvore.
+                    if (data.includes('\r')) {
+                        setTimeout(mudarRaiz, 500);
+                    }
+                }
+            });
+
+            conectar(t);
+            return terminais.length - 1;
+        }
+
+        // Restaura os terminais da última visita. O formato antigo guardava uma
+        // sessão só; ler os dois evita abandonar um shell rodando de quem
+        // atualizou o binário.
+        (function iniciarTerminais() {
+            const salvos = lerMemoria(CHAVES.terminais, null);
+            let lista = salvos && salvos.lista ? salvos.lista : [];
+            if (!lista.length) {
+                const legado = lerMemoria(CHAVES.sessao, null);
+                if (legado) lista = [legado];
             }
-        });
+            if (!lista.length) lista = [null];   // primeira visita: um terminal novo
+
+            lista.forEach(id => criarTerminal(id));
+            const ativa = salvos && salvos.ativa >= 0 && salvos.ativa < terminais.length
+                ? salvos.ativa : 0;
+            ativarTerminal(ativa);
+        })();
 
         window.addEventListener('resize', () => {
-            fitAddon.fit();
-            sincronizarTamanhoTerminal();
+            const t = terminais[terminalAtivo];
+            if (t) { t.fit.fit(); sincronizarTamanho(t); }
         });
 
         // Tráfego do lado do navegador; o servidor manda os Pings do lado dele.
         setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "ping" }));
-            }
+            terminais.forEach(t => {
+                if (t.ws && t.ws.readyState === WebSocket.OPEN) {
+                    t.ws.send(JSON.stringify({ type: "ping" }));
+                }
+            });
         }, 30000);
     </script>
 </body>
