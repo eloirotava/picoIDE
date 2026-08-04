@@ -19,3 +19,16 @@ serde_json = "1.0"
 # Terminal Real
 portable-pty = "0.8"
 futures-util = "0.3"
+
+# O binário vai para uma placa, então tamanho vale mais que microdesempenho:
+# o trabalho aqui é I/O (PTY, rede, disco), não CPU. Medido no alvo armhf:
+# 2,81 MB só com strip de símbolos -> 2,11 MB com tudo isto ligado.
+#
+# `panic = "abort"` encolheria mais, mas fica de fora de propósito: com ele um
+# panic em qualquer requisição derruba o processo inteiro, e junto vão todas as
+# sessões de terminal persistentes — inclusive builds em andamento.
+[profile.release]
+strip = true          # símbolos e debuginfo, sem depender de RUSTFLAGS
+lto = true
+codegen-units = 1
+opt-level = "z"       # troque por "s" se algum dia o tamanho importar menos

@@ -20,14 +20,48 @@
     <script src="vendor/codemirror/mode/css/css.js"></script>
     <script src="vendor/codemirror/mode/htmlmixed/htmlmixed.js"></script>
     <script src="vendor/codemirror/mode/toml/toml.js"></script>
+    <!-- meta.js mapeia extensão -> modo; os modos abaixo são os que
+         valem para o que se edita numa placa. Sem o modo carregado, o
+         arquivo abre como texto puro em vez de quebrar. -->
+    <script src="vendor/codemirror/mode/meta.js"></script>
+    <script src="vendor/codemirror/mode/clike/clike.js"></script>
+    <script src="vendor/codemirror/mode/python/python.js"></script>
+    <script src="vendor/codemirror/mode/shell/shell.js"></script>
+    <script src="vendor/codemirror/mode/yaml/yaml.js"></script>
+    <script src="vendor/codemirror/mode/markdown/markdown.js"></script>
+    <script src="vendor/codemirror/mode/dockerfile/dockerfile.js"></script>
+    <script src="vendor/codemirror/mode/go/go.js"></script>
+    <script src="vendor/codemirror/mode/lua/lua.js"></script>
+    <script src="vendor/codemirror/mode/ruby/ruby.js"></script>
+    <script src="vendor/codemirror/mode/sql/sql.js"></script>
+    <script src="vendor/codemirror/mode/cmake/cmake.js"></script>
+    <script src="vendor/codemirror/mode/nginx/nginx.js"></script>
+    <script src="vendor/codemirror/mode/properties/properties.js"></script>
+    <script src="vendor/codemirror/mode/diff/diff.js"></script>
 
     <link rel="stylesheet" href="vendor/xterm/css/xterm.css" />
     <script src="vendor/xterm/lib/xterm.js"></script>
     <script src="vendor/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
 
     <style>
-        body { margin: 0; padding: 0; background-color: #1e1e1e; color: #ccc; font-family: sans-serif; display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 1fr 300px; height: 100vh; overflow: hidden; }
-        #sidebar { grid-column: 1; grid-row: 1 / 3; background-color: #252526; border-right: 1px solid #333; display: flex; flex-direction: column; overflow: hidden; }
+        /* As duas medidas ajustáveis moram aqui: arrastar as divisórias só
+           troca estas variáveis, e o resto do layout se acomoda sozinho. */
+        body { --larg-lateral: 280px; --alt-terminal: 300px;
+               margin: 0; padding: 0; background-color: #1e1e1e; color: #ccc; font-family: sans-serif;
+               display: grid;
+               grid-template-columns: var(--larg-lateral) 5px 1fr;
+               grid-template-rows: 1fr 5px var(--alt-terminal);
+               height: 100vh; overflow: hidden; }
+        .divisoria { background: #333; }
+        .divisoria:hover, body.arrastando .divisoria { background: #0e639c; }
+        #divisoria-lateral { grid-column: 2; grid-row: 1 / -1; cursor: col-resize; }
+        #divisoria-terminal { grid-column: 3; grid-row: 2; cursor: row-resize; }
+        /* Durante o arrasto, uma camada por cima de tudo: sem ela o ponteiro
+           entra no xterm ou no editor e o movimento vira seleção de texto. */
+        #capa-arrasto { position: fixed; inset: 0; z-index: 9999; display: none; }
+        body.arrastando #capa-arrasto { display: block; }
+        body.arrastando { user-select: none; }
+        #sidebar { grid-column: 1; grid-row: 1 / -1; background-color: #252526; border-right: 1px solid #333; display: flex; flex-direction: column; overflow: hidden; }
         #sidebar-header { padding: 10px; background-color: #333; display: flex; justify-content: space-between; align-items: center; }
         #root-path-input { background: #1e1e1e; color: #ccc; border: 1px solid #555; padding: 5px; width: 100%; border-radius: 3px; margin-right: 5px; outline: none; font-family: monospace;}
         #root-path-input:focus { border-color: #0e639c; }
@@ -40,12 +74,12 @@
         #sidebar.soltando { outline: 2px dashed #0e639c; outline-offset: -2px; }
         #status-upload:empty { display: none; }
         #status-upload { padding: 6px 10px; font-size: 12px; color: #d7ba7d; background: #2d2d30; }
-        #editor-container { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; }
+        #editor-container { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; overflow: hidden; }
         #top-bar { background-color: #333; padding: 5px 15px; display: flex; justify-content: space-between; align-items: center; }
         #btn-baixar-atual { background: #3a3d41; color: #ccc; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; margin-right: 4px; }
         #btn-salvar { background: #0e639c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; transition: background 0.3s ease; }
         .CodeMirror { flex-grow: 1; height: 100%; font-size: 16px; }
-        #terminal-container { grid-column: 2; grid-row: 2; background-color: #000; border-top: 1px solid #333; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; }
+        #terminal-container { grid-column: 3; grid-row: 3; background-color: #000; border-top: 1px solid #333; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; }
         /* Os terminais ficam empilhados no mesmo lugar; só o ativo aparece.
            Manter os inativos montados (em vez de recriar) preserva a tela e o
            scrollback de cada um ao trocar de aba. */
@@ -91,6 +125,10 @@
         <textarea id="editor"></textarea>
     </div>
 
+    <div class="divisoria" id="divisoria-lateral" title="Arraste para redimensionar"></div>
+    <div class="divisoria" id="divisoria-terminal" title="Arraste para redimensionar"></div>
+    <div id="capa-arrasto"></div>
+
     <div id="terminal-container">
         <div id="abas-terminais" class="barra-abas"></div>
         <div id="telas-terminais"></div>
@@ -121,7 +159,8 @@
             arquivo: 'picoide.currentFile',      // legado: um arquivo só
             arquivos: 'picoide.openFiles',
             sessao: 'picoide.terminalSession',    // legado: um terminal só
-            terminais: 'picoide.terminals'
+            terminais: 'picoide.terminals',
+            tamanhos: 'picoide.paneSizes'
         };
 
         function lerMemoria(chave, padrao) {
@@ -156,11 +195,20 @@
         let arquivoAtual = "";
         let binarioAberto = false;
 
+        // O meta.js do CodeMirror já conhece a tabela de extensões e nomes
+        // (Dockerfile, Makefile, CMakeLists.txt...). Devolvemos o mime, e não o
+        // nome do modo, porque o clike serve C, C++, Java e outros por mime.
+        // Sem modo conhecido, texto puro: colorir .log como JavaScript, que era
+        // o padrão antigo, deixava a tela pior do que sem realce nenhum.
         function modoDe(nome) {
-            if (nome.endsWith('.rs')) return "rust";
-            if (nome.endsWith('.html')) return "htmlmixed";
-            if (nome.endsWith('.toml')) return "toml";
-            return "javascript";
+            if (!CodeMirror.findModeByFileName) return "text/plain";
+            // O nome vai como está: "Dockerfile" e "CMakeLists.txt" são casados
+            // por expressão sensível a maiúsculas, e passar tudo em minúsculas
+            // fazia os dois caírem em texto puro. As minúsculas ficam de
+            // reserva, para extensões gritadas do tipo ARQUIVO.PY.
+            const info = CodeMirror.findModeByFileName(nome)
+                      || CodeMirror.findModeByFileName(nome.toLowerCase());
+            return info ? (info.mime || info.mode) : "text/plain";
         }
 
         // Baixar só faz sentido com arquivo aberto; salvar, só se for texto.
@@ -835,6 +883,15 @@
             return terminais.length - 1;
         }
 
+        // Os tamanhos entram antes de qualquer terminal existir: assim o
+        // primeiro fit() já mede a caixa definitiva, sem precisar de correção.
+        (function restaurarTamanhos() {
+            const salvos = lerMemoria(CHAVES.tamanhos, null);
+            if (!salvos) return;
+            if (salvos.lateral) ajustarMedida('--larg-lateral', salvos.lateral);
+            if (salvos.terminal) ajustarMedida('--alt-terminal', salvos.terminal);
+        })();
+
         // Restaura os terminais da última visita. O formato antigo guardava uma
         // sessão só; ler os dois evita abandonar um shell rodando de quem
         // atualizou o binário.
@@ -857,6 +914,78 @@
             const t = terminais[terminalAtivo];
             if (t) { t.fit.fit(); sincronizarTamanho(t); }
         });
+
+        // --- DIVISÓRIAS ARRASTÁVEIS ---
+        function medida(variavel) {
+            return parseInt(getComputedStyle(document.body)
+                .getPropertyValue(variavel), 10);
+        }
+
+        function ajustarMedida(variavel, valor) {
+            // Os limites são calculados aqui dentro, e não num const lá em
+            // cima: a restauração dos tamanhos roda antes desta seção, e uma
+            // referência a const ainda não inicializada estouraria.
+            const limites = {
+                '--larg-lateral': { min: 150, max: window.innerWidth - 300 },
+                '--alt-terminal': { min: 80,  max: window.innerHeight - 150 }
+            };
+            const lim = limites[variavel];
+            const preso = Math.max(lim.min, Math.min(valor, lim.max));
+            document.body.style.setProperty(variavel, preso + 'px');
+            return preso;
+        }
+
+        function salvarTamanhos() {
+            gravarMemoria(CHAVES.tamanhos, {
+                lateral: medida('--larg-lateral'),
+                terminal: medida('--alt-terminal')
+            });
+        }
+
+        // O xterm não se reajusta sozinho: além do fit() visual, o shell
+        // precisa saber as novas dimensões, senão continua quebrando linha
+        // pela geometria antiga.
+        function reajustarPaineis({ avisarShell }) {
+            const t = terminais[terminalAtivo];
+            if (t) {
+                t.fit.fit();
+                if (avisarShell) sincronizarTamanho(t);
+            }
+            if (editor) editor.refresh();
+        }
+
+        function arrastar(divisoria, variavel, eixo) {
+            document.getElementById(divisoria).addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                document.body.classList.add('arrastando');
+
+                const mover = (ev) => {
+                    // A lateral cresce com o ponteiro; o terminal, ao contrário,
+                    // porque ele é medido a partir da base da janela.
+                    ajustarMedida(variavel, eixo === 'x'
+                        ? ev.clientX
+                        : window.innerHeight - ev.clientY);
+                    // Só o ajuste visual durante o arrasto: mandar um resize ao
+                    // shell a cada pixel entupiria o PTY à toa.
+                    reajustarPaineis({ avisarShell: false });
+                };
+
+                const soltar = () => {
+                    document.removeEventListener('mousemove', mover);
+                    document.removeEventListener('mouseup', soltar);
+                    document.body.classList.remove('arrastando');
+                    // Agora sim o shell é avisado, uma vez só.
+                    reajustarPaineis({ avisarShell: true });
+                    salvarTamanhos();
+                };
+
+                document.addEventListener('mousemove', mover);
+                document.addEventListener('mouseup', soltar);
+            });
+        }
+
+        arrastar('divisoria-lateral', '--larg-lateral', 'x');
+        arrastar('divisoria-terminal', '--alt-terminal', 'y');
 
         // Tráfego do lado do navegador; o servidor manda os Pings do lado dele.
         setInterval(() => {

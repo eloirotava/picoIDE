@@ -43,7 +43,8 @@ jobs:
     # musl já linka estático por padrão, e rust-lld dispensa instalar um
     # toolchain de cross-compilação C, porque o projeto é Rust puro.
     env:
-      RUSTFLAGS: -C linker=rust-lld -C strip=symbols
+      # O strip vem do [profile.release] do Cargo.toml.
+      RUSTFLAGS: -C linker=rust-lld
       ALVO: ${{ matrix.alvo }}
       SAIDA: picoide-${{ matrix.nome }}
     strategy:

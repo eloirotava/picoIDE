@@ -11,6 +11,8 @@ a um F5 e o terminal não cair sozinho.
 | `test_arvore.py` | O refresh automático não repinta a árvore quando nada mudou (é o que fazia a barra piscar), mas continua mostrando arquivo novo — na raiz e dentro de subpasta aberta. |
 | `test_abas.py` | Dois arquivos abertos não compartilham texto, o autosave grava no que foi editado mesmo depois de trocar de aba, dois terminais são sessões distintas, fechar um não derruba o outro, as duas listas de abas voltam depois do reload, e selecionar no terminal já copia sem que o Ctrl+C deixe de interromper. |
 | `test_subpasta.py` | Sobe um proxy que imita o `route /picoide*` + `strip_prefix` do Caddy — inclusive recusando o que cai fora do prefixo — e confere que assets, API e WebSocket funcionam servidos em `/picoide/`. |
+| `test_divisorias.py` | Arrastar redimensiona a árvore e o terminal, o shell aprende o novo tamanho (conferido com `stty size`), os limites impedem sumir com um painel e os tamanhos voltam depois do reload. |
+| `test_realce.py` | 20 tipos de arquivo abrem com o modo certo do CodeMirror e de fato coloridos; extensão desconhecida vira texto puro em vez de JavaScript. |
 | `test_persistencia.py` | Depois de um reload voltam a pasta, a árvore expandida, o arquivo aberto e o conteúdo no editor — e o terminal é o mesmo shell de antes, com variável e histórico intactos. |
 | `test_reconexao.py` | Derruba o servidor de verdade e confere que o terminal reconecta sozinho; e que um `exit` não vira laço de reconexão. |
 

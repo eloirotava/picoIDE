@@ -40,7 +40,10 @@ copiar codemirror/lib/codemirror.css
 copiar codemirror/theme/dracula.css
 # O modo rust usa defineSimpleMode, que vem neste addon.
 copiar codemirror/addon/mode/simple.js
-for modo in javascript rust xml css htmlmixed toml; do
+copiar codemirror/mode/meta.js
+for modo in javascript rust xml css htmlmixed toml \
+            clike python shell yaml markdown dockerfile go lua ruby sql \
+            cmake nginx properties diff; do
   copiar "codemirror/mode/$modo/$modo.js"
 done
 

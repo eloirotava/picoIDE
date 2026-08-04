@@ -58,6 +58,10 @@ RUSTFLAGS="-C target-feature=+crt-static" \
 # binário em target/<triple>/release/meu-mini-ide
 ```
 
+O `[profile.release]` do `Cargo.toml` já faz o strip e otimiza para tamanho
+(`lto`, `codegen-units = 1`, `opt-level = "z"`), então não é preciso passar nada
+disso na linha de comando — vale igual para o build local e para o do CI.
+
 Sem o `--target`, o `RUSTFLAGS` também vale para os *proc-macros*, que são
 compilados para a máquina do build e precisam ser bibliotecas dinâmicas — o
 `+crt-static` torna isso impossível:
@@ -80,7 +84,7 @@ da distro se chama `x86_64-alpine-linux-musl`, e o do rustup,
 
 ```sh
 rustup target add armv7-unknown-linux-musleabihf
-RUSTFLAGS="-C linker=rust-lld -C strip=symbols" \
+RUSTFLAGS="-C linker=rust-lld" \
   cargo build --release --target armv7-unknown-linux-musleabihf
 ```
 
@@ -127,9 +131,9 @@ interface são montados a partir da pasta em que a página foi servida, então o
 servidor não precisa saber o prefixo — quem o remove é o proxy.
 
 ```caddy
-la.rotava.com {
+exemplo.com {
     basic_auth {
-        eloi $2a$14$...
+        usuario <hash-bcrypt-gerado-com-caddy-hash-password>
     }
 
     # A barra final é obrigatória: sem ela o navegador resolve os endereços
@@ -138,7 +142,7 @@ la.rotava.com {
 
     route /picoide/* {
         uri strip_prefix /picoide
-        reverse_proxy 10.0.3.174:8080
+        reverse_proxy 192.168.0.10:8080
     }
 }
 ```
@@ -216,6 +220,15 @@ essa tecla deixaria ambígua a mais importante das duas funções.
 Acessar a placa por `http://IP` não é contexto seguro, e ali a Clipboard API do
 navegador nem existe — por isso o copiar tem um caminho alternativo, que é
 justamente o que roda no uso real.
+
+As divisórias entre a árvore, o editor e o terminal são **arrastáveis**, e os
+tamanhos ficam no `localStorage`. Ao soltar, o terminal avisa o shell das novas
+dimensões: sem isso ele continuaria quebrando linha pela geometria antiga.
+
+O realce cobre C, C++, headers, Rust, Python, shell, Go, Lua, Ruby, SQL, YAML,
+Markdown, JSON, TOML, CSS, HTML, XML, Dockerfile, CMake, nginx, diff e arquivos
+`.ini`/`.conf` — o mapeamento vem do `meta.js` do CodeMirror, que também conhece
+nomes sem extensão. Extensão desconhecida abre como texto puro.
 
 A árvore se atualiza sozinha a cada 10s, mas só repinta quando a listagem
 realmente mudou. Sem essa checagem a barra pisca a cada ciclo e você perde a
