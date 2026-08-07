@@ -1,42 +1,24 @@
-name: CI
+# O único workflow do projeto, e ele só roda quando alguém aperta o botão:
+# Actions -> Release -> Run workflow, informando a versão (ex.: v0.0.1).
+#
+# A tag é criada pela própria release, então não é preciso taguear à mão antes.
+# Os testes de ponta a ponta ficaram fora daqui de propósito: rode-os na sua
+# máquina com ./tests/e2e/run.sh antes de publicar.
+name: Release
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
+    inputs:
+      versao:
+        description: 'Versão da release (com o v na frente, ex.: v0.0.1)'
+        required: true
+        default: v0.0.1
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  testes:
-    name: Testes de ponta a ponta
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: testes
-
-      - name: Compila para a máquina do runner
-        run: cargo build
-
-      - name: Instala as dependências dos testes
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -r tests/e2e/requirements.txt
-          # Via "python3 -m" para não depender do script console estar no PATH.
-          python3 -m playwright install --with-deps chromium
-
-      - name: Roda a suíte
-        run: ./tests/e2e/run.sh
-
   build:
     name: Executável ${{ matrix.nome }} estático
     runs-on: ubuntu-latest
@@ -157,13 +139,21 @@ jobs:
 
   release:
     name: Publica a release
-    # Só publica binário que passou nos testes e subiu de verdade nos três alvos.
-    needs: [testes, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Só publica binário que subiu de verdade nos três alvos.
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSAO: ${{ inputs.versao }}
     steps:
+      - name: Confere o formato da versão
+        run: |
+          # Versão fora do padrão vira tag torta e quebra o link da
+          # "última release" que o README manda o usuário seguir.
+          echo "$VERSAO" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+' \
+            || { echo "::error::Versão inválida: $VERSAO (esperado vX.Y.Z)"; exit 1; }
+
       - uses: actions/download-artifact@v4
         with:
           pattern: picoide-*
@@ -210,11 +200,13 @@ jobs:
 
           ## Mudanças
 
-          https://github.com/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME
+          https://github.com/$GITHUB_REPOSITORY/commits/$VERSAO
           NOTAS
 
-          gh release create "$GITHUB_REF_NAME" \
+          # O --target cria a tag apontando para o commit deste run.
+          gh release create "$VERSAO" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "picoIDE $GITHUB_REF_NAME" \
+            --target "$GITHUB_SHA" \
+            --title "picoIDE $VERSAO" \
             --notes-file notas.md \
             picoide-amd64 picoide-arm64 picoide-armhf SHA256SUMS

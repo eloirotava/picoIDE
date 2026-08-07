@@ -60,7 +60,7 @@ RUSTFLAGS="-C target-feature=+crt-static" \
 
 O `[profile.release]` do `Cargo.toml` já faz o strip e otimiza para tamanho
 (`lto`, `codegen-units = 1`, `opt-level = "z"`), então não é preciso passar nada
-disso na linha de comando — vale igual para o build local e para o do CI.
+disso na linha de comando — vale igual para o build local e para o da release.
 
 Sem o `--target`, o `RUSTFLAGS` também vale para os *proc-macros*, que são
 compilados para a máquina do build e precisam ser bibliotecas dinâmicas — o
@@ -123,6 +123,14 @@ playwright install chromium
 ```
 
 Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
+
+Nada roda sozinho a cada push: o único workflow é o **Release**, e ele só sai
+quando alguém aperta o botão em Actions → Release → Run workflow, informando a
+versão (`vX.Y.Z`). Ele compila os três binários estáticos, confere que cada um
+saiu estático e na arquitetura certa, sobe cada um (com qemu onde não é a
+arquitetura do runner) para ver a página e a API responderem, e só então cria a
+tag e publica a release com os binários e o `SHA256SUMS`. Rode a suíte de ponta
+a ponta na sua máquina antes de publicar.
 
 ## Atrás de um proxy reverso
 
