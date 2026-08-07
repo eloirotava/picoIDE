@@ -20,7 +20,7 @@ def texto_do_editor(page):
 
 
 def clicar_aba(page, barra, nome):
-    page.locator(f"#{barra} .aba", has_text=nome).first.click()
+    page.locator(f"{barra} .aba", has_text=nome).first.click()
 
 
 def testar_arquivos(page, pasta, falhas):
@@ -46,7 +46,7 @@ def testar_arquivos(page, pasta, falhas):
         falhas.append("a aba ativa não mostra o conteúdo do arquivo dela")
 
     # Voltar para a primeira aba tem de trazer o texto dela de volta.
-    clicar_aba(page, "abas-arquivos", "alfa.txt")
+    clicar_aba(page, "#abas-arquivos", "alfa.txt")
     page.wait_for_timeout(500)
     if texto_do_editor(page) != "conteudo do alfa":
         falhas.append("trocar de aba não trouxe o conteúdo do outro arquivo")
@@ -58,7 +58,7 @@ def testar_arquivos(page, pasta, falhas):
         cm.setValue('alfa editado');
     }""")
     page.wait_for_timeout(300)
-    clicar_aba(page, "abas-arquivos", "beta.txt")
+    clicar_aba(page, "#abas-arquivos", "beta.txt")
     page.wait_for_timeout(7000)   # o autosave dispara 5s depois da edição
 
     if (pasta / "alfa.txt").read_text() != "alfa editado":
@@ -79,12 +79,12 @@ def testar_arquivos(page, pasta, falhas):
 
 
 def testar_terminais(page, falhas):
-    if page.locator("#abas-terminais .aba").count() != 1:
+    if page.locator(".abas-terminais .aba").count() != 1:
         falhas.append("não começou com exatamente um terminal")
 
-    page.click("#abas-terminais .nova-aba")
+    page.click(".abas-terminais .nova-aba")
     page.wait_for_timeout(3000)
-    if page.locator("#abas-terminais .aba").count() != 2:
+    if page.locator(".abas-terminais .aba").count() != 2:
         falhas.append("o + não abriu um segundo terminal")
 
     # Só uma tela visível por vez, senão os dois terminais brigariam pela área.
@@ -98,16 +98,16 @@ def testar_terminais(page, falhas):
     if "MARCA_DO_SEGUNDO" not in ler_terminal(page):
         falhas.append("o segundo terminal não respondeu ao que foi digitado")
 
-    clicar_aba(page, "abas-terminais", "Terminal 1")
+    clicar_aba(page, ".abas-terminais", "Terminal 1")
     page.wait_for_timeout(1500)
     if "MARCA_DO_SEGUNDO" in ler_terminal(page):
         falhas.append("os dois terminais são a mesma sessão")
 
     # Fechar o segundo deixa o primeiro em pé.
-    page.locator("#abas-terminais .aba", has_text="Terminal 2").first \
+    page.locator(".abas-terminais .aba", has_text="Terminal 2").first \
         .locator(".fechar").click()
     page.wait_for_timeout(2000)
-    if page.locator("#abas-terminais .aba").count() != 1:
+    if page.locator(".abas-terminais .aba").count() != 1:
         falhas.append("fechar um terminal não deixou exatamente um")
 
     page.keyboard.type("echo AINDA_VIVO\n")
@@ -195,7 +195,7 @@ def testar_restauracao(pw, pasta, falhas):
     page.wait_for_timeout(500)
     page.click("#file-list >> text=beta.txt")
     page.wait_for_timeout(500)
-    page.click("#abas-terminais .nova-aba")
+    page.click(".abas-terminais .nova-aba")
     page.wait_for_timeout(2500)
 
     page.reload()
@@ -204,7 +204,7 @@ def testar_restauracao(pw, pasta, falhas):
 
     if page.locator("#abas-arquivos .aba").count() != 2:
         falhas.append("as abas de arquivo não voltaram depois do reload")
-    if page.locator("#abas-terminais .aba").count() != 2:
+    if page.locator(".abas-terminais .aba").count() != 2:
         falhas.append("as abas de terminal não voltaram depois do reload")
 
     navegador.close()

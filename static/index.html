@@ -80,12 +80,39 @@
         #btn-salvar { background: #0e639c; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px; transition: background 0.3s ease; }
         .CodeMirror { flex-grow: 1; height: 100%; font-size: 16px; }
         #terminal-container { grid-column: 3; grid-row: 3; background-color: #000; border-top: 1px solid #333; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; }
-        /* Os terminais ficam empilhados no mesmo lugar; só o ativo aparece.
-           Manter os inativos montados (em vez de recriar) preserva a tela e o
-           scrollback de cada um ao trocar de aba. */
-        #telas-terminais { flex-grow: 1; position: relative; overflow: hidden; }
+        /* A área do terminal é uma ÁRVORE de painéis: cada folha é um grupo com
+           a sua barra de abas, e cada divisão arruma os filhos em linha ou
+           coluna. O min-width/min-height zerado é obrigatório: sem ele o
+           conteúdo do xterm vira piso de tamanho e o flex não encolhe mais. */
+        #painel-terminais { flex-grow: 1; display: flex; min-width: 0; min-height: 0; }
+        #painel-terminais > * { flex: 1 1 0; }
+        .divisao { display: flex; min-width: 0; min-height: 0; }
+        .divisao.linha { flex-direction: row; }
+        .divisao.coluna { flex-direction: column; }
+        .divisao > * { flex-basis: 0; min-width: 0; min-height: 0; }
+        .divisao > .divisoria { flex: 0 0 5px; }
+        .divisao.linha > .divisoria { cursor: col-resize; }
+        .divisao.coluna > .divisoria { cursor: row-resize; }
+        .grupo-terminal { display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0; }
+        /* Com dois painéis à vista, é preciso saber qual deles recebe o teclado. */
+        .grupo-terminal.foco > .barra-abas { box-shadow: inset 0 -2px 0 #0e639c; }
+        /* Os terminais de um mesmo grupo ficam empilhados no mesmo lugar; só o
+           ativo aparece. Manter os inativos montados (em vez de recriar)
+           preserva a tela e o scrollback de cada um ao trocar de aba. */
+        .telas-terminais { flex-grow: 1; position: relative; overflow: hidden; }
         .terminal-tela { position: absolute; inset: 0; display: none; }
         .terminal-tela.ativa { display: block; }
+        /* Casa das telas enquanto a árvore é remontada: elas são MOVIDAS de um
+           painel para o outro, nunca recriadas, senão cada rearranjo perderia a
+           tela, o scrollback e a conexão do terminal. */
+        #deposito-telas { display: none; }
+        /* Arrastar aba: o rótulo segue o ponteiro e o retângulo azul mostra
+           onde o painel vai nascer. */
+        body.arrastando-aba { user-select: none; cursor: grabbing; }
+        body.arrastando-aba #capa-arrasto { display: block; }
+        #fantasma-aba, #indicador-solta { position: fixed; display: none; pointer-events: none; }
+        #fantasma-aba { z-index: 10001; background: #0e639c; color: #fff; padding: 3px 8px; font-size: 12px; border-radius: 3px; }
+        #indicador-solta { z-index: 10000; background: rgba(14, 99, 156, 0.35); border: 1px solid #0e639c; box-sizing: border-box; }
         /* O padding fica AQUI, no próprio .xterm, e não no pai: o FitAddon
            calcula as linhas a partir da altura do pai menos o padding deste
            elemento. Com o padding no pai ele contava uma linha a mais do que
@@ -97,7 +124,8 @@
         .aba .fechar { opacity: 0.5; padding: 0 2px; }
         .aba .fechar:hover { opacity: 1; }
         .aba .sujo { color: #d7ba7d; }
-        .nova-aba { background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 10px; font-size: 14px; }
+        .nova-aba, .dividir-aba { background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 10px; font-size: 14px; }
+        .nova-aba:hover, .dividir-aba:hover { color: #fff; }
     </style>
 </head>
 <body>
@@ -130,9 +158,11 @@
     <div id="capa-arrasto"></div>
 
     <div id="terminal-container">
-        <div id="abas-terminais" class="barra-abas"></div>
-        <div id="telas-terminais"></div>
+        <div id="painel-terminais"></div>
     </div>
+    <div id="deposito-telas"></div>
+    <div id="fantasma-aba"></div>
+    <div id="indicador-solta"></div>
 
     <script>
         // --- ENDEREÇOS ---
@@ -619,10 +649,21 @@
 
         // --- TERMINAIS ---
         // O servidor já mantém uma sessão por id; aqui cada aba é uma sessão.
-        // As telas inativas continuam montadas, para trocar de aba não perder
-        // a tela nem o scrollback de nenhuma delas.
-        const terminais = [];   // { term, fit, ws, sessao, tentativas, encerrado, tela }
-        let terminalAtivo = -1;
+        //
+        // A área do terminal não é uma lista de abas, e sim uma ÁRVORE de
+        // painéis, para dar dois (ou quatro) terminais à vista ao mesmo tempo:
+        //
+        //   grupo   { tipo:'grupo',   abas:[id...], ativa:id }
+        //   divisão { tipo:'divisao', dir:'linha'|'coluna', filhos:[...], fracoes:[...] }
+        //
+        // Cada grupo é uma folha com a sua própria barra de abas; arrastar uma
+        // aba para a borda de um painel o divide, e para o meio só a muda de
+        // painel. As frações guardam a repartição do espaço entre irmãos, que é
+        // o que as divisórias internas movem.
+        const terminais = [];   // { id, term, fit, ws, sessao, tentativas, encerrado, tela }
+        let layout = null;      // raiz da árvore
+        let proximoId = 1;      // vira o "Terminal N" da aba; nunca é reusado
+        let focoTerminal = null;
 
         // A Clipboard API só existe em contexto seguro. Acessar a placa por
         // http://IP-DA-MAQUINA:8080 NÃO é contexto seguro (só localhost e
@@ -664,68 +705,475 @@
             } catch (e) { /* sem permissão: resta o Ctrl+V, que usa o caminho nativo */ }
         }
 
-        function desenharAbasTerminais() {
-            const barra = document.getElementById('abas-terminais');
-            barra.innerHTML = '';
-            terminais.forEach((t, i) => {
-                const aba = document.createElement('div');
-                aba.className = 'aba' + (i === terminalAtivo ? ' ativa' : '');
-                aba.onclick = () => ativarTerminal(i);
+        // --- A ÁRVORE DE PAINÉIS ---
 
-                const nome = document.createElement('span');
-                nome.textContent = `Terminal ${i + 1}`;
-                aba.appendChild(nome);
-
-                const fechar = document.createElement('span');
-                fechar.className = 'fechar';
-                fechar.textContent = '×';
-                fechar.title = 'Encerrar este terminal';
-                fechar.onclick = (e) => { e.stopPropagation(); fecharTerminal(i); };
-                aba.appendChild(fechar);
-
-                barra.appendChild(aba);
-            });
-
-            const mais = document.createElement('button');
-            mais.className = 'nova-aba';
-            mais.textContent = '+';
-            mais.title = 'Novo terminal';
-            mais.onclick = () => { const i = criarTerminal(null); ativarTerminal(i); };
-            barra.appendChild(mais);
+        function terminalPor(id) {
+            return terminais.find(t => t.id === id) || null;
         }
 
-        function salvarTerminais() {
-            gravarMemoria(CHAVES.terminais, {
-                lista: terminais.map(t => t.sessao).filter(Boolean),
-                ativa: terminalAtivo
-            });
+        function percorrer(no, fn, pai) {
+            if (!no) return;
+            fn(no, pai || null);
+            if (no.tipo === 'divisao') no.filhos.forEach(f => percorrer(f, fn, no));
         }
 
-        function sincronizarTamanho(t) {
-            if (t && t.ws && t.ws.readyState === WebSocket.OPEN) {
-                t.ws.send(JSON.stringify({ type: "resize", cols: t.term.cols, rows: t.term.rows }));
+        function gruposDoLayout() {
+            const achados = [];
+            percorrer(layout, no => { if (no.tipo === 'grupo') achados.push(no); });
+            return achados;
+        }
+
+        function paiDe(no) {
+            let pai = null;
+            percorrer(layout, (atual, acima) => { if (atual === no) pai = acima; });
+            return pai;
+        }
+
+        function grupoDe(id) {
+            return gruposDoLayout().find(g => g.abas.includes(id)) || null;
+        }
+
+        // Põe `novo` no lugar de `velho`. Uma divisão que entra na mesma direção
+        // do pai é achatada: sem isso a árvore ganha camadas que se comportam
+        // igual, e as frações de cada nível deixam de bater com a tela.
+        function substituirNo(velho, novo) {
+            const pai = paiDe(velho);
+            if (!pai) { layout = novo; return; }
+            const i = pai.filhos.indexOf(velho);
+            if (novo.tipo === 'divisao' && novo.dir === pai.dir) {
+                const fatia = pai.fracoes[i];
+                const soma = novo.fracoes.reduce((a, b) => a + b, 0);
+                pai.filhos.splice(i, 1, ...novo.filhos);
+                pai.fracoes.splice(i, 1, ...novo.fracoes.map(f => f / soma * fatia));
+            } else {
+                pai.filhos[i] = novo;
             }
         }
 
-        function ativarTerminal(i) {
-            if (i < 0 || i >= terminais.length) return;
-            terminalAtivo = i;
-            terminais.forEach((t, j) => t.tela.classList.toggle('ativa', j === i));
+        function tirarNo(no) {
+            const pai = paiDe(no);
+            if (!pai) { layout = null; return; }
+            const i = pai.filhos.indexOf(no);
+            pai.filhos.splice(i, 1);
+            const fatia = pai.fracoes.splice(i, 1)[0];
+            // A fatia vai para o vizinho: o painel que sai devolve o espaço a
+            // quem estava do lado, em vez de espremer todo mundo de novo.
+            const vizinho = Math.min(i, pai.filhos.length - 1);
+            if (vizinho >= 0) pai.fracoes[vizinho] += fatia;
+            // Divisão de um filho só não divide nada: some e promove o filho.
+            if (pai.filhos.length === 1) substituirNo(pai, pai.filhos[0]);
+        }
 
-            const t = terminais[i];
-            // Os testes e o resto da página falam com o terminal da vez.
-            window.term = t.term;
-            // Só dá para medir o tamanho depois de a tela estar visível.
-            t.fit.fit();
-            sincronizarTamanho(t);
-            t.term.focus();
+        function tirarAba(id) {
+            const grupo = grupoDe(id);
+            if (!grupo) return;
+            const i = grupo.abas.indexOf(id);
+            grupo.abas.splice(i, 1);
+            if (grupo.ativa === id) {
+                grupo.ativa = grupo.abas[Math.min(i, grupo.abas.length - 1)];
+            }
+            if (!grupo.abas.length) tirarNo(grupo);
+        }
 
-            desenharAbasTerminais();
+        function moverParaGrupo(destino, id) {
+            if (grupoDe(id) === destino) { destino.ativa = id; return; }
+            tirarAba(id);
+            destino.abas.push(id);
+            destino.ativa = id;
+        }
+
+        // lado: 'esq' | 'dir' | 'cima' | 'baixo'
+        function dividir(alvo, lado, id) {
+            // Um painel sem nenhuma aba (a tela vazia) não tem o que dividir.
+            if (!alvo.abas.length) { moverParaGrupo(alvo, id); return; }
+            const origem = grupoDe(id);
+            // Sozinha no painel, a aba já ocupa aquele espaço inteiro: dividir
+            // seria movê-la para onde ela está, deixando um painel vazio.
+            if (origem === alvo && origem.abas.length === 1) return;
+
+            const dir = (lado === 'esq' || lado === 'dir') ? 'linha' : 'coluna';
+            const antes = (lado === 'esq' || lado === 'cima');
+            tirarAba(id);
+            const novo = { tipo: 'grupo', abas: [id], ativa: id };
+            const pai = paiDe(alvo);
+            if (pai && pai.dir === dir) {
+                // Já há irmãos nessa direção: entra como mais um, repartindo o
+                // espaço só com o painel em que você soltou.
+                const i = pai.filhos.indexOf(alvo);
+                const meio = pai.fracoes[i] / 2;
+                pai.fracoes[i] = meio;
+                pai.filhos.splice(antes ? i : i + 1, 0, novo);
+                pai.fracoes.splice(antes ? i : i + 1, 0, meio);
+            } else {
+                substituirNo(alvo, {
+                    tipo: 'divisao', dir,
+                    filhos: antes ? [novo, alvo] : [alvo, novo],
+                    fracoes: [0.5, 0.5]
+                });
+            }
+        }
+
+        // --- DESENHO DA ÁRVORE ---
+
+        function montarAba(grupo, t) {
+            const aba = document.createElement('div');
+            aba.className = 'aba' + (t.id === grupo.ativa ? ' ativa' : '');
+            aba.title = 'Arraste para a borda de um painel para dividir a tela';
+
+            const nome = document.createElement('span');
+            nome.textContent = `Terminal ${t.id}`;
+            aba.appendChild(nome);
+
+            const fechar = document.createElement('span');
+            fechar.className = 'fechar';
+            fechar.textContent = '×';
+            fechar.title = 'Encerrar este terminal';
+            fechar.onclick = (e) => { e.stopPropagation(); fecharTerminal(t.id); };
+            aba.appendChild(fechar);
+
+            aba.addEventListener('mousedown', (e) => {
+                if (e.button !== 0 || e.target === fechar) return;
+                arrastarAba(e, t.id);
+            });
+            // O clique que fecha o arrasto não pode reativar a aba de origem.
+            aba.onclick = () => { if (!arrastouAba) ativarTerminal(t.id); };
+            return aba;
+        }
+
+        function botaoDaBarra(classe, texto, titulo, acao) {
+            const b = document.createElement('button');
+            b.className = classe;
+            b.textContent = texto;
+            b.title = titulo;
+            b.onclick = acao;
+            return b;
+        }
+
+        function montarGrupo(no) {
+            const caixa = document.createElement('div');
+            caixa.className = 'grupo-terminal';
+            // O arrasto de aba precisa voltar do elemento para o nó da árvore.
+            caixa.no = no;
+
+            const barra = document.createElement('div');
+            barra.className = 'barra-abas abas-terminais';
+            const telas = document.createElement('div');
+            telas.className = 'telas-terminais';
+
+            no.abas.forEach(id => {
+                const t = terminalPor(id);
+                if (!t) return;
+                barra.appendChild(montarAba(no, t));
+                t.tela.classList.toggle('ativa', id === no.ativa);
+                telas.appendChild(t.tela);
+            });
+
+            barra.appendChild(botaoDaBarra('nova-aba', '+', 'Novo terminal neste painel', () => {
+                const t = criarTerminal(null);
+                moverParaGrupo(no, t.id);
+                focoTerminal = t.id;
+                aplicarLayout();
+            }));
+            barra.appendChild(botaoDaBarra('dividir-aba', '⊞', 'Dividir: novo terminal ao lado', () => {
+                const t = criarTerminal(null);
+                dividir(no, 'dir', t.id);
+                focoTerminal = t.id;
+                aplicarLayout();
+            }));
+
+            caixa.appendChild(barra);
+            caixa.appendChild(telas);
+            if (grupoDe(focoTerminal) === no) caixa.classList.add('foco');
+            return caixa;
+        }
+
+        function montarNo(no) {
+            if (no.tipo === 'grupo') return montarGrupo(no);
+            const caixa = document.createElement('div');
+            caixa.className = 'divisao ' + no.dir;
+            no.filhos.forEach((filho, i) => {
+                if (i > 0) {
+                    const divisoria = document.createElement('div');
+                    divisoria.className = 'divisoria';
+                    divisoria.title = 'Arraste para redimensionar';
+                    arrastarInterno(divisoria, no, i);
+                    caixa.appendChild(divisoria);
+                }
+                const el = montarNo(filho);
+                el.style.flexGrow = no.fracoes[i];
+                caixa.appendChild(el);
+            });
+            return caixa;
+        }
+
+        // Redesenha a árvore inteira. As telas são MOVIDAS para o depósito e de
+        // volta, nunca recriadas: recriar mataria o xterm, o scrollback e a
+        // conexão de cada terminal a cada rearranjo.
+        function aplicarLayout() {
+            if (!layout) layout = { tipo: 'grupo', abas: [], ativa: undefined };
+            if (!grupoDe(focoTerminal)) {
+                const primeiro = gruposDoLayout()[0];
+                focoTerminal = primeiro ? primeiro.ativa : null;
+            }
+
+            const deposito = document.getElementById('deposito-telas');
+            terminais.forEach(t => deposito.appendChild(t.tela));
+            const raiz = document.getElementById('painel-terminais');
+            raiz.innerHTML = '';
+            raiz.appendChild(montarNo(layout));
+
+            ajustarVisiveis({ avisarShell: true });
+            const t = terminalPor(focoTerminal);
+            // Os testes e o resto da página falam com o terminal em foco.
+            window.term = t ? t.term : null;
+            if (t) t.term.focus();
             salvarTerminais();
         }
 
-        async function fecharTerminal(i) {
-            const t = terminais[i];
+        // Só o terminal da frente de cada painel ocupa tela; os escondidos se
+        // reajustam quando voltam.
+        function terminaisVisiveis() {
+            return gruposDoLayout().map(g => terminalPor(g.ativa)).filter(Boolean);
+        }
+
+        function ajustarVisiveis({ avisarShell }) {
+            terminaisVisiveis().forEach(t => {
+                t.fit.fit();
+                if (avisarShell) sincronizarTamanho(t);
+            });
+        }
+
+        // Ajustar quatro xterms a cada mousemove trava o arrasto; um por quadro
+        // já acompanha o ponteiro.
+        let quadroAjuste = null;
+        function agendarAjuste() {
+            if (quadroAjuste) return;
+            quadroAjuste = requestAnimationFrame(() => {
+                quadroAjuste = null;
+                ajustarVisiveis({ avisarShell: false });
+            });
+        }
+
+        function marcarFoco() {
+            const alvo = grupoDe(focoTerminal);
+            document.querySelectorAll('.grupo-terminal').forEach(el => {
+                el.classList.toggle('foco', el.no === alvo);
+            });
+        }
+
+        // --- ARRASTAR ABA PARA DIVIDIR ---
+        // Arrasto próprio, com mousedown/mousemove, e não a API de drag-and-drop
+        // do HTML: os eventos dela se perdem por cima do xterm, e aqui já existe
+        // a capa de arrasto que impede o movimento de virar seleção de texto.
+        let arrastouAba = false;
+
+        function retangulosDosGrupos() {
+            return Array.from(document.querySelectorAll('.grupo-terminal')).map(el => ({
+                no: el.no,
+                caixa: el.getBoundingClientRect(),
+                telas: el.querySelector('.telas-terminais').getBoundingClientRect()
+            }));
+        }
+
+        // Onde a aba cairia se você soltasse agora: perto de uma borda, divide
+        // por ali; no meio (ou na barra de abas), só muda de painel.
+        function alvoDaSolta(alvos, x, y) {
+            for (const alvo of alvos) {
+                const c = alvo.caixa;
+                if (x < c.left || x > c.right || y < c.top || y > c.bottom) continue;
+                const r = alvo.telas;
+                // Painel minúsculo não tem borda que se distinga do meio.
+                if (y < r.top || r.width < 120 || r.height < 80) {
+                    return Object.assign({}, alvo, { lado: 'centro' });
+                }
+                const bordas = [
+                    ['esq', (x - r.left) / r.width],
+                    ['dir', (r.right - x) / r.width],
+                    ['cima', (y - r.top) / r.height],
+                    ['baixo', (r.bottom - y) / r.height]
+                ].sort((a, b) => a[1] - b[1]);
+                const lado = bordas[0][1] < 0.3 ? bordas[0][0] : 'centro';
+                return Object.assign({}, alvo, { lado });
+            }
+            return null;
+        }
+
+        function areaDoAlvo(alvo) {
+            const r = alvo.telas;
+            const meia = { left: r.left, top: r.top, width: r.width, height: r.height };
+            if (alvo.lado === 'esq' || alvo.lado === 'dir') meia.width = r.width / 2;
+            if (alvo.lado === 'cima' || alvo.lado === 'baixo') meia.height = r.height / 2;
+            if (alvo.lado === 'dir') meia.left = r.left + r.width / 2;
+            if (alvo.lado === 'baixo') meia.top = r.top + r.height / 2;
+            return meia;
+        }
+
+        function arrastarAba(evento, id) {
+            const x0 = evento.clientX, y0 = evento.clientY;
+            const fantasma = document.getElementById('fantasma-aba');
+            const indicador = document.getElementById('indicador-solta');
+            let arrastando = false, alvos = null, alvo = null;
+
+            const mover = (ev) => {
+                if (!arrastando) {
+                    // Uns pixels de folga: sem isso um clique com a mão trêmula
+                    // viraria arrasto, e trocar de aba ficaria imprevisível.
+                    if (Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) < 6) return;
+                    arrastando = true;
+                    arrastouAba = true;
+                    document.body.classList.add('arrastando-aba');
+                    // Medido uma vez: durante o arrasto o layout não muda.
+                    alvos = retangulosDosGrupos();
+                    fantasma.textContent = `Terminal ${id}`;
+                    fantasma.style.display = 'block';
+                }
+                fantasma.style.left = (ev.clientX + 12) + 'px';
+                fantasma.style.top = (ev.clientY + 12) + 'px';
+
+                alvo = alvoDaSolta(alvos, ev.clientX, ev.clientY);
+                if (!alvo) { indicador.style.display = 'none'; return; }
+                const area = areaDoAlvo(alvo);
+                indicador.style.display = 'block';
+                indicador.style.left = area.left + 'px';
+                indicador.style.top = area.top + 'px';
+                indicador.style.width = area.width + 'px';
+                indicador.style.height = area.height + 'px';
+            };
+
+            const soltar = () => {
+                document.removeEventListener('mousemove', mover);
+                document.removeEventListener('mouseup', soltar);
+                if (!arrastando) return;
+                document.body.classList.remove('arrastando-aba');
+                fantasma.style.display = 'none';
+                indicador.style.display = 'none';
+                if (alvo) {
+                    if (alvo.lado === 'centro') moverParaGrupo(alvo.no, id);
+                    else dividir(alvo.no, alvo.lado, id);
+                    focoTerminal = id;
+                    aplicarLayout();
+                }
+                // Solta a trava do clique só depois que ele já passou.
+                setTimeout(() => { arrastouAba = false; }, 0);
+            };
+
+            document.addEventListener('mousemove', mover);
+            document.addEventListener('mouseup', soltar);
+        }
+
+        // --- DIVISÓRIAS ENTRE PAINÉIS ---
+        // Cada divisória reparte espaço só entre os dois painéis que ela separa;
+        // o resto da linha (ou coluna) fica onde está.
+        function arrastarInterno(elemento, no, i) {
+            elemento.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                document.body.classList.add('arrastando');
+
+                const linha = no.dir === 'linha';
+                const caixa = elemento.parentElement.getBoundingClientRect();
+                const util = (linha ? caixa.width : caixa.height) - 5 * (no.filhos.length - 1);
+                const soma = no.fracoes.reduce((a, b) => a + b, 0);
+                const antes = i - 1, depois = i;
+                const pxAntes = no.fracoes[antes] / soma * util;
+                const pxDepois = no.fracoes[depois] / soma * util;
+                const inicio = linha ? e.clientX : e.clientY;
+                const elAntes = elemento.previousElementSibling;
+                const elDepois = elemento.nextElementSibling;
+                let finalAntes = pxAntes, finalDepois = pxDepois;
+
+                const mover = (ev) => {
+                    const d = (linha ? ev.clientX : ev.clientY) - inicio;
+                    // Piso de 60px: um painel que chega a zero some da tela e
+                    // não sobra divisória para puxá-lo de volta.
+                    const preso = Math.max(60 - pxAntes, Math.min(d, pxDepois - 60));
+                    finalAntes = pxAntes + preso;
+                    finalDepois = pxDepois - preso;
+                    elAntes.style.flexGrow = finalAntes / util * soma;
+                    elDepois.style.flexGrow = finalDepois / util * soma;
+                    agendarAjuste();
+                };
+
+                const soltar = () => {
+                    document.removeEventListener('mousemove', mover);
+                    document.removeEventListener('mouseup', soltar);
+                    document.body.classList.remove('arrastando');
+                    no.fracoes[antes] = finalAntes / util * soma;
+                    no.fracoes[depois] = finalDepois / util * soma;
+                    // Agora sim os shells são avisados, uma vez só.
+                    ajustarVisiveis({ avisarShell: true });
+                    salvarTerminais();
+                };
+
+                document.addEventListener('mousemove', mover);
+                document.addEventListener('mouseup', soltar);
+            });
+        }
+
+        // --- MEMÓRIA DOS TERMINAIS ---
+        // O que vai para o localStorage é a árvore com as SESSÕES no lugar dos
+        // ids: id é numeração desta visita, sessão é o que o servidor conhece.
+        function serializar(no) {
+            if (no.tipo === 'grupo') {
+                // Sessão nula = shell que já morreu; guardá-la faria a próxima
+                // visita abrir um painel para um terminal que não existe mais.
+                const vivos = no.abas.map(id => terminalPor(id)).filter(t => t && t.sessao);
+                if (!vivos.length) return null;
+                const ativa = terminalPor(no.ativa);
+                return {
+                    tipo: 'grupo',
+                    sessoes: vivos.map(t => t.sessao),
+                    ativa: (ativa && ativa.sessao) || vivos[0].sessao
+                };
+            }
+            const filhos = [], fracoes = [];
+            no.filhos.forEach((filho, i) => {
+                const parte = serializar(filho);
+                if (parte) { filhos.push(parte); fracoes.push(no.fracoes[i]); }
+            });
+            if (!filhos.length) return null;
+            if (filhos.length === 1) return filhos[0];
+            return { tipo: 'divisao', dir: no.dir, filhos, fracoes };
+        }
+
+        function salvarTerminais() {
+            const foco = terminalPor(focoTerminal);
+            gravarMemoria(CHAVES.terminais, {
+                // Um terminal pode se anunciar antes de a árvore existir, na
+                // restauração; aí não há layout nenhum para gravar ainda.
+                layout: layout ? serializar(layout) : null,
+                foco: foco ? foco.sessao : null
+            });
+        }
+
+        // O que vem do localStorage pode estar velho ou corrompido, então nada
+        // aqui confia no formato: nó que não se entende vira null e é podado.
+        function restaurar(no) {
+            if (!no || typeof no !== 'object') return null;
+            if (no.tipo === 'divisao' && Array.isArray(no.filhos)) {
+                const filhos = [], fracoes = [];
+                no.filhos.forEach((filho, i) => {
+                    const parte = restaurar(filho);
+                    if (!parte) return;
+                    filhos.push(parte);
+                    const f = Array.isArray(no.fracoes) ? no.fracoes[i] : 1;
+                    fracoes.push(typeof f === 'number' && f > 0 ? f : 1);
+                });
+                if (!filhos.length) return null;
+                if (filhos.length === 1) return filhos[0];
+                return {
+                    tipo: 'divisao', dir: no.dir === 'coluna' ? 'coluna' : 'linha',
+                    filhos, fracoes
+                };
+            }
+            const sessoes = Array.isArray(no.sessoes) ? no.sessoes.filter(s => s) : [];
+            if (!sessoes.length) return null;
+            const ids = sessoes.map(s => criarTerminal(s).id);
+            const i = sessoes.indexOf(no.ativa);
+            return { tipo: 'grupo', abas: ids, ativa: ids[i >= 0 ? i : 0] };
+        }
+
+        async function fecharTerminal(id) {
+            const t = terminalPor(id);
             if (!t) return;
 
             // Fechar a aba encerra a sessão de vez: diferente de fechar a
@@ -739,16 +1187,23 @@
             if (t.ws) { t.ws.onclose = null; t.ws.close(); }
             t.term.dispose();
             t.tela.remove();
-            terminais.splice(i, 1);
+            terminais.splice(terminais.indexOf(t), 1);
+            tirarAba(id);
+            aplicarLayout();
+        }
 
-            if (!terminais.length) {
-                terminalAtivo = -1;
-                window.term = null;
-                desenharAbasTerminais();
-                salvarTerminais();
-                return;
+        function sincronizarTamanho(t) {
+            if (t && t.ws && t.ws.readyState === WebSocket.OPEN) {
+                t.ws.send(JSON.stringify({ type: "resize", cols: t.term.cols, rows: t.term.rows }));
             }
-            ativarTerminal(Math.min(i, terminais.length - 1));
+        }
+
+        function ativarTerminal(id) {
+            const grupo = grupoDe(id);
+            if (!grupo) return;
+            grupo.ativa = id;
+            focoTerminal = id;
+            aplicarLayout();
         }
 
         function conectar(t) {
@@ -826,7 +1281,8 @@
         function criarTerminal(sessao) {
             const tela = document.createElement('div');
             tela.className = 'terminal-tela';
-            document.getElementById('telas-terminais').appendChild(tela);
+            // Nasce no depósito; quem o coloca num painel é o aplicarLayout.
+            document.getElementById('deposito-telas').appendChild(tela);
 
             const term = new Terminal({
                 theme: { background: '#000' }, fontFamily: 'monospace', fontSize: 14, cursorBlink: true
@@ -835,8 +1291,18 @@
             term.loadAddon(fit);
             term.open(tela);
 
-            const t = { term, fit, ws: null, sessao, tentativas: 0, encerrado: false, tela };
+            const t = { id: proximoId++, term, fit, ws: null, sessao, tentativas: 0, encerrado: false, tela };
             terminais.push(t);
+
+            // Quem tem o teclado define o painel em foco: com dois terminais à
+            // vista, clicar num deles precisa trocar o alvo do window.term.
+            term.textarea.addEventListener('focus', () => {
+                if (focoTerminal === t.id) return;
+                focoTerminal = t.id;
+                window.term = term;
+                marcarFoco();
+                salvarTerminais();
+            });
 
             // Copiar é ao selecionar, como no ttyd: no terminal o Ctrl+C já
             // significa interromper o processo, e sobrecarregar essa tecla
@@ -880,7 +1346,7 @@
             });
 
             conectar(t);
-            return terminais.length - 1;
+            return t;
         }
 
         // Os tamanhos entram antes de qualquer terminal existir: assim o
@@ -892,28 +1358,35 @@
             if (salvos.terminal) ajustarMedida('--alt-terminal', salvos.terminal);
         })();
 
-        // Restaura os terminais da última visita. O formato antigo guardava uma
-        // sessão só; ler os dois evita abandonar um shell rodando de quem
-        // atualizou o binário.
+        // Restaura os terminais da última visita, com a divisão de painéis que
+        // estava na tela. Os formatos antigos (uma lista de abas, ou uma sessão
+        // só) continuam sendo lidos: sem isso, quem atualiza o binário abandona
+        // um shell que estava rodando.
         (function iniciarTerminais() {
             const salvos = lerMemoria(CHAVES.terminais, null);
-            let lista = salvos && salvos.lista ? salvos.lista : [];
-            if (!lista.length) {
-                const legado = lerMemoria(CHAVES.sessao, null);
-                if (legado) lista = [legado];
-            }
-            if (!lista.length) lista = [null];   // primeira visita: um terminal novo
+            if (salvos && salvos.layout) layout = restaurar(salvos.layout);
 
-            lista.forEach(id => criarTerminal(id));
-            const ativa = salvos && salvos.ativa >= 0 && salvos.ativa < terminais.length
-                ? salvos.ativa : 0;
-            ativarTerminal(ativa);
+            if (!layout) {
+                let lista = salvos && salvos.lista ? salvos.lista : [];
+                if (!lista.length) {
+                    const legado = lerMemoria(CHAVES.sessao, null);
+                    if (legado) lista = [legado];
+                }
+                if (!lista.length) lista = [null];   // primeira visita: um terminal novo
+                const ids = lista.map(sessao => criarTerminal(sessao).id);
+                const i = salvos && salvos.ativa >= 0 && salvos.ativa < ids.length
+                    ? salvos.ativa : 0;
+                layout = { tipo: 'grupo', abas: ids, ativa: ids[i] };
+            }
+
+            const foco = salvos && salvos.foco
+                ? terminais.find(t => t.sessao === salvos.foco) : null;
+            const primeiro = gruposDoLayout()[0];
+            focoTerminal = foco ? foco.id : (primeiro ? primeiro.ativa : null);
+            aplicarLayout();
         })();
 
-        window.addEventListener('resize', () => {
-            const t = terminais[terminalAtivo];
-            if (t) { t.fit.fit(); sincronizarTamanho(t); }
-        });
+        window.addEventListener('resize', () => ajustarVisiveis({ avisarShell: true }));
 
         // --- DIVISÓRIAS ARRASTÁVEIS ---
         function medida(variavel) {
@@ -944,13 +1417,9 @@
 
         // O xterm não se reajusta sozinho: além do fit() visual, o shell
         // precisa saber as novas dimensões, senão continua quebrando linha
-        // pela geometria antiga.
+        // pela geometria antiga. Vale para todos os painéis à vista.
         function reajustarPaineis({ avisarShell }) {
-            const t = terminais[terminalAtivo];
-            if (t) {
-                t.fit.fit();
-                if (avisarShell) sincronizarTamanho(t);
-            }
+            ajustarVisiveis({ avisarShell });
             if (editor) editor.refresh();
         }
 

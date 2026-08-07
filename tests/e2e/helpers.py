@@ -9,8 +9,11 @@ import time
 
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
 BINARIO = os.environ.get("PICOIDE_BIN", str(RAIZ / "target" / "debug" / "meu-mini-ide"))
-URL = os.environ.get("PICOIDE_URL", "http://127.0.0.1:8080")
-PORTA = 8080
+# Numa máquina que já roda um picoIDE de verdade, a 8080 está ocupada; o
+# PICOIDE_PORTA move a suíte inteira de porta sem mexer no que está no ar.
+PORTA = int(os.environ.get("PICOIDE_PORTA", "8080"))
+URL = os.environ.get("PICOIDE_URL", f"http://127.0.0.1:{PORTA}")
+WS = URL.replace("http://", "ws://").replace("https://", "wss://") + "/api/ws"
 
 
 def exigir_offline(page, externas):
@@ -49,8 +52,15 @@ def porta_ocupada():
 def subir_servidor():
     if not os.path.isfile(BINARIO):
         raise SystemExit(f"Binário não encontrado: {BINARIO}\nRode: cargo build")
-    proc = subprocess.Popen([BINARIO], stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
+    # Sem esta checagem, um picoIDE já no ar faz a espera abaixo terminar na
+    # hora e a suíte inteira testar o servidor errado — falhando por motivos
+    # que não existem no binário que se queria testar.
+    if porta_ocupada():
+        raise SystemExit(
+            f"A porta {PORTA} já está ocupada por outro processo.\n"
+            f"Pare-o ou rode com PICOIDE_PORTA=<outra>.")
+    proc = subprocess.Popen([BINARIO, "--porta", str(PORTA)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(60):
         if porta_ocupada():
             return proc
@@ -91,10 +101,12 @@ LER_BUFFER = """() => {
     return linhas.join('\\n');
 }"""
 
-# Com várias abas de terminal, as telas inativas continuam montadas: é preciso
-# mirar a que está visível, senão o texto vai para um terminal escondido.
+# Com várias abas de terminal, as telas inativas continuam montadas; e com a
+# tela dividida há mais de uma visível ao mesmo tempo. O alvo é a do painel em
+# foco, que é o mesmo que o window.term dos testes enxerga.
 FOCAR_TERMINAL = """() => {
-    const t = document.querySelector('.terminal-tela.ativa .xterm-helper-textarea')
+    const t = document.querySelector('.grupo-terminal.foco .terminal-tela.ativa .xterm-helper-textarea')
+           || document.querySelector('.terminal-tela.ativa .xterm-helper-textarea')
            || document.querySelector('#terminal-container .xterm-helper-textarea');
     if (t) t.focus();
 }"""

@@ -7,9 +7,8 @@ import sys
 
 import websockets
 
-from helpers import RAIZ, servidor
+from helpers import RAIZ, WS, servidor
 
-WS = "ws://127.0.0.1:8080/api/ws"
 PASTA = str(RAIZ)
 
 # Com o log em DEBUG a lib registra cada frame; usamos isso para provar que os

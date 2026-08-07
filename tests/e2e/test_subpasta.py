@@ -14,11 +14,13 @@ import threading
 
 from playwright.sync_api import sync_playwright
 
-from helpers import abrir_navegador, relatar, servidor
+from helpers import PORTA, abrir_navegador, relatar, servidor
 
 PREFIXO = "/picoide"
-PORTA_PROXY = 8099
-ALVO = ("127.0.0.1", 8080)
+# Porta só do proxy do teste; se a instância estiver justamente nela
+# (PICOIDE_PORTA=8099), o proxy se muda para os dois não brigarem.
+PORTA_PROXY = 8099 if PORTA != 8099 else 8100
+ALVO = ("127.0.0.1", PORTA)
 
 
 async def _encanar(origem, destino):

@@ -12,9 +12,8 @@ import sys
 
 import websockets
 
-from helpers import servidor
+from helpers import WS, servidor
 
-WS = "ws://127.0.0.1:8080/api/ws"
 MARCA_PROCESSO = "sleep 4242"
 
 

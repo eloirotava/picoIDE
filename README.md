@@ -199,10 +199,25 @@ de desfazer não se misturam ao alternar; e o autosave grava no arquivo que foi
 editado mesmo que você já tenha trocado de aba. Cada terminal é uma sessão
 independente no servidor.
 
+Os terminais também abrem **lado a lado**: arraste a aba de um deles para a
+borda de um painel e ele passa a ocupar aquela metade, com a sua própria barra
+de abas. Repetindo o gesto dá para chegar a quatro (2x2) ou mais, e todas as
+divisórias que aparecem entre eles são arrastáveis como as demais. O `⊞` da
+barra é o atalho para o caso comum: um terminal novo ao lado. Soltar uma aba no
+**meio** de outro painel faz o contrário — junta os dois de volta num painel só.
+Quando o último terminal de um painel é fechado, o painel some e o espaço volta
+para o vizinho.
+
+Ao rearranjar, as telas são movidas de lugar, nunca recriadas: o terminal
+continua com o que estava escrito, o scrollback e a conexão. Cada painel avisa
+o **seu** shell do tamanho que lhe coube, então dois terminais na mesma tela
+quebram linha cada um pela largura que tem.
+
 Fechar a aba de um terminal (o `×`) **encerra aquele shell**, diferente de
-fechar a página, que o deixa rodando. As duas listas de abas ficam no
-`localStorage`, junto com a pasta aberta e as pastas expandidas da árvore, então
-recarregar a página não joga você de volta na raiz nem fecha nada.
+fechar a página, que o deixa rodando. As abas de arquivo e a divisão dos painéis
+de terminal ficam no `localStorage`, junto com a pasta aberta e as pastas
+expandidas da árvore, então recarregar a página não joga você de volta na raiz,
+não fecha nada e devolve a tela do jeito que estava.
 
 Para mover arquivos: o 📤 na barra lateral (ou arrastar da sua máquina para
 cima dela) envia para a pasta aberta, e o **⬇ Baixar** da barra de cima baixa o
@@ -221,9 +236,10 @@ Acessar a placa por `http://IP` não é contexto seguro, e ali a Clipboard API d
 navegador nem existe — por isso o copiar tem um caminho alternativo, que é
 justamente o que roda no uso real.
 
-As divisórias entre a árvore, o editor e o terminal são **arrastáveis**, e os
-tamanhos ficam no `localStorage`. Ao soltar, o terminal avisa o shell das novas
-dimensões: sem isso ele continuaria quebrando linha pela geometria antiga.
+As divisórias entre a árvore, o editor e o terminal são **arrastáveis** — assim
+como as que separam terminais lado a lado —, e os tamanhos ficam no
+`localStorage`. Ao soltar, o terminal avisa o shell das novas dimensões: sem
+isso ele continuaria quebrando linha pela geometria antiga.
 
 O realce cobre C, C++, headers, Rust, Python, shell, Go, Lua, Ruby, SQL, YAML,
 Markdown, JSON, TOML, CSS, HTML, XML, Dockerfile, CMake, nginx, diff e arquivos
