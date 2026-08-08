@@ -26,9 +26,8 @@ jobs:
     # toolchain de cross-compilação C, porque o projeto é Rust puro.
     env:
       # O strip vem do [profile.release] do Cargo.toml.
-      RUSTFLAGS: -C linker=rust-lld
       ALVO: ${{ matrix.alvo }}
-      SAIDA: picoide-${{ matrix.nome }}
+      SAIDA: picoide-${{ matrix.nome }}${{ matrix.sufixo }}
     strategy:
       # Um alvo quebrado não impede de ver se os outros dois estão de pé.
       fail-fast: false
@@ -38,14 +37,27 @@ jobs:
             alvo: x86_64-unknown-linux-musl
             padrao_file: x86-64
             qemu: ''
+            sufixo: ''
           - nome: armhf
             alvo: armv7-unknown-linux-musleabihf
             padrao_file: 'ELF 32-bit.*ARM,'
             qemu: qemu-arm-static
+            sufixo: ''
           - nome: arm64
             alvo: aarch64-unknown-linux-musl
             padrao_file: ARM aarch64
             qemu: qemu-aarch64-static
+            sufixo: ''
+          - nome: win64
+            alvo: x86_64-pc-windows-gnu
+            padrao_file: 'PE32\+ executable.*x86-64'
+            qemu: skip
+            sufixo: .exe
+          - nome: win32
+            alvo: i686-pc-windows-gnu
+            padrao_file: 'PE32 executable.*Intel 80386'
+            qemu: skip
+            sufixo: .exe
     steps:
       - uses: actions/checkout@v4
 
@@ -58,19 +70,31 @@ jobs:
         with:
           key: ${{ matrix.alvo }}
 
+      - name: Instala dependências (Linux e Windows)
+        run: |
+          if [[ "$ALVO" == *"windows"* ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq mingw-w64
+            echo "RUSTFLAGS=" >> $GITHUB_ENV
+          else
+            echo "RUSTFLAGS=-C linker=rust-lld" >> $GITHUB_ENV
+          fi
+
       - name: Compila
         run: cargo build --release --target "$ALVO"
 
       - name: Confere que saiu estático e na arquitetura certa
         run: |
-          BIN="target/$ALVO/release/meu-mini-ide"
+          BIN="target/$ALVO/release/meu-mini-ide${{ matrix.sufixo }}"
           file "$BIN"
 
           # Um binário dinâmico rodaria em quem tem as libs certas e falharia
-          # em quem não tem, então isso é erro duro e não aviso.
-          if readelf -d "$BIN" 2>/dev/null | grep -q NEEDED; then
-            echo "::error::O binário ficou dinâmico (tem dependências NEEDED)."
-            exit 1
+          # em quem não tem, então isso é erro duro e não aviso. (Só válido para Linux)
+          if [ "${{ matrix.sufixo }}" = "" ]; then
+            if readelf -d "$BIN" 2>/dev/null | grep -q NEEDED; then
+              echo "::error::O binário ficou dinâmico (tem dependências NEEDED)."
+              exit 1
+            fi
           fi
 
           # Entregar o binário de uma arquitetura com o nome de outra rende um
@@ -92,6 +116,11 @@ jobs:
 
       - name: Sobe o binário e testa
         run: |
+          if [ "${{ matrix.qemu }}" = "skip" ]; then
+            echo "Pulando teste para ${{ matrix.nome }} (Windows)"
+            exit 0
+          fi
+
           if [ -n "${{ matrix.qemu }}" ]; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq qemu-user-static
@@ -134,7 +163,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: picoide-${{ matrix.nome }}
-          path: picoide-${{ matrix.nome }}
+          path: ${{ env.SAIDA }}
           if-no-files-found: error
 
   release:
@@ -161,8 +190,8 @@ jobs:
 
       - name: Gera os checksums
         run: |
-          chmod +x picoide-*
-          sha256sum picoide-amd64 picoide-armhf picoide-arm64 > SHA256SUMS
+          chmod +x picoide-* || true
+          sha256sum picoide-amd64 picoide-armhf picoide-arm64 picoide-win64.exe picoide-win32.exe > SHA256SUMS
           cat SHA256SUMS
 
       - name: Cria a release com os binários anexados
@@ -176,12 +205,14 @@ jobs:
 
           | Arquivo | Para |
           | --- | --- |
-          | \`picoide-amd64\` | PC/servidor x86-64 |
-          | \`picoide-arm64\` | ARM 64-bit (Raspberry Pi 3/4/5 em SO 64-bit, Orange Pi, etc) |
-          | \`picoide-armhf\` | ARM 32-bit hard-float (Banana Pi M1, Raspberry Pi em SO 32-bit) |
+          | \`picoide-amd64\` | PC/servidor Linux x86-64 |
+          | \`picoide-arm64\` | Linux ARM 64-bit (Raspberry Pi 3/4/5 em SO 64-bit, Orange Pi, etc) |
+          | \`picoide-armhf\` | Linux ARM 32-bit hard-float (Banana Pi M1, Raspberry Pi em SO 32-bit) |
+          | \`picoide-win64.exe\` | Windows 64-bit |
+          | \`picoide-win32.exe\` | Windows 32-bit |
 
           Na dúvida sobre qual baixar, rode \`uname -m\`: \`x86_64\` → amd64,
-          \`aarch64\` → arm64, \`armv7l\` → armhf.
+          \`aarch64\` → arm64, \`armv7l\` → armhf. No Windows, \`win64\` é a opção mais comum.
 
           ## Instalando
 
@@ -209,4 +240,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "picoIDE $VERSAO" \
             --notes-file notas.md \
-            picoide-amd64 picoide-arm64 picoide-armhf SHA256SUMS
+            picoide-amd64 picoide-arm64 picoide-armhf picoide-win64.exe picoide-win32.exe SHA256SUMS

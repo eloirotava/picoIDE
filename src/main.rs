@@ -97,47 +97,63 @@ const PORTA_PADRAO: u16 = 8080;
 
 // Argumentos na mão em vez de uma crate de CLI: é uma opção só, e o binário
 // vai para uma placa onde cada dependência pesa no tamanho e no tempo de build.
-fn porta_dos_argumentos() -> u16 {
+fn args_do_servidor() -> (std::net::IpAddr, u16) {
     let mut args = std::env::args().skip(1);
+    let mut porta = None;
+    let mut ip = None;
 
     while let Some(arg) = args.next() {
-        let valor = match arg.as_str() {
+        match arg.as_str() {
             "-h" | "--ajuda" | "--help" => {
                 println!("picoIDE — IDE mínima servida por um executável só.\n");
-                println!("Uso: picoide [--porta N]\n");
+                println!("Uso: picoide [--porta N] [--ip ENDERECO]\n");
                 println!("  -p, --porta N   Porta onde escutar (padrão: {}).", PORTA_PADRAO);
+                println!("  -i, --ip IP     IP onde escutar (padrão: 0.0.0.0).");
                 println!("  -h, --ajuda     Mostra esta ajuda.");
                 std::process::exit(0);
             }
-            "-p" | "--porta" => args.next(),
+            "-p" | "--porta" => {
+                porta = Some(args.next().unwrap_or_default());
+            }
             outro if outro.starts_with("--porta=") => {
-                Some(outro["--porta=".len()..].to_string())
+                porta = Some(outro["--porta=".len()..].to_string());
+            }
+            "-i" | "--ip" => {
+                ip = Some(args.next().unwrap_or_default());
+            }
+            outro if outro.starts_with("--ip=") => {
+                ip = Some(outro["--ip=".len()..].to_string());
             }
             // Um número solto também vale: "picoide 9090".
-            outro if outro.parse::<u16>().is_ok() => Some(outro.to_string()),
+            outro if outro.parse::<u16>().is_ok() => {
+                porta = Some(outro.to_string());
+            }
             outro => {
                 eprintln!("Argumento desconhecido: {}. Use --ajuda.", outro);
                 std::process::exit(2);
             }
-        };
-
-        // Porta inválida é erro duro: escutar numa porta diferente da pedida
-        // faria o usuário procurar o problema no lugar errado.
-        match valor.as_deref().map(str::parse::<u16>) {
-            Some(Ok(0)) | None => {
-                eprintln!("--porta precisa de um número entre 1 e 65535.");
-                std::process::exit(2);
-            }
-            Some(Err(_)) => {
-                eprintln!("Porta inválida: {}. Use um número entre 1 e 65535.",
-                          valor.unwrap_or_default());
-                std::process::exit(2);
-            }
-            Some(Ok(n)) => return n,
         }
     }
 
-    PORTA_PADRAO
+    let porta_final = match porta.as_deref().map(str::parse::<u16>) {
+        Some(Ok(0)) | Some(Err(_)) => {
+            eprintln!("Porta inválida: {}. Use um número entre 1 e 65535.", porta.unwrap_or_default());
+            std::process::exit(2);
+        }
+        Some(Ok(n)) => n,
+        None => PORTA_PADRAO,
+    };
+
+    let ip_final = match ip.as_deref().map(str::parse::<std::net::IpAddr>) {
+        Some(Err(_)) => {
+            eprintln!("IP inválido: {}.", ip.unwrap_or_default());
+            std::process::exit(2);
+        }
+        Some(Ok(i)) => i,
+        None => std::net::Ipv4Addr::new(0, 0, 0, 0).into(),
+    };
+
+    (ip_final, porta_final)
 }
 
 #[tokio::main]
@@ -161,10 +177,10 @@ async fn main() {
         .route("/api/terminal/encerrar", post(encerrar_sessao))
         .with_state(registro);
 
-    let porta = porta_dos_argumentos();
-    let addr = SocketAddr::from(([0, 0, 0, 0], porta));
+    let (ip, porta) = args_do_servidor();
+    let addr = SocketAddr::new(ip, porta);
 
-    println!("🚀 Pico IDE (Binário Único) rodando na porta {}!", porta);
+    println!("🚀 Pico IDE (Binário Único) rodando em {}:{}!", ip, porta);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
