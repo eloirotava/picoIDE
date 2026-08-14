@@ -4,8 +4,8 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         DefaultBodyLimit, Path as ParamCaminho, Query, State,
     },
-    http::{header, StatusCode},
-    response::{Html, IntoResponse},
+    http::{header, HeaderMap, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -35,12 +35,11 @@ use tokio_util::io::ReaderStream;
 const INTERVALO_KEEPALIVE: Duration = Duration::from_secs(20);
 
 // Quanto da saída fica guardado para quem reata ver o que passou enquanto a
-// aba esteve fechada. 256 KB cobre bem a cauda de um build sem inchar a RAM
-// da placa.
+// aba esteve fechada. 256 KB cobre bem a cauda de um build sem inchar a RAM.
 const SCROLLBACK_MAX: usize = 256 * 1024;
 
 // Teto de shells simultâneos. Sem isso, cada navegador que perde o id deixaria
-// um shell para trás e a placa acabaria sem memória.
+// um shell para trás e o servidor acabaria sem memória.
 const MAX_SESSOES: usize = 16;
 
 // Uma sessão de terminal: vive no servidor, independente de qualquer websocket.
@@ -83,7 +82,13 @@ struct ReadQuery { path: String }
 struct TerminalQuery { cwd: Option<String>, sessao: Option<String> }
 
 #[derive(Deserialize)]
-struct SaveRequest { path: String, content: String }
+struct SaveRequest {
+    path: String,
+    content: String,
+    // Ausente mantém compatibilidade com clientes antigos e significa
+    // "sobrescrever". A interface atual sempre manda a revisão que leu.
+    revision: Option<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
@@ -95,8 +100,8 @@ enum WsTerminalMessage {
 
 const PORTA_PADRAO: u16 = 8080;
 
-// Argumentos na mão em vez de uma crate de CLI: é uma opção só, e o binário
-// vai para uma placa onde cada dependência pesa no tamanho e no tempo de build.
+// Argumentos na mão em vez de uma crate de CLI: são duas opções simples, e
+// cada dependência a menos reduz o binário e o tempo de build.
 fn args_do_servidor() -> (std::net::IpAddr, u16) {
     let mut args = std::env::args().skip(1);
     let mut porta = None;
@@ -170,7 +175,7 @@ async fn main() {
         .route("/api/save", post(save_file))
         .route("/api/download", get(download_file))
         // O limite padrão do axum (2 MB) barraria justamente o caso de uso:
-        // subir um binário para a placa. O corpo vai direto para o disco em
+        // subir um binário para o servidor. O corpo vai direto para o disco em
         // pedaços, então não é a RAM que dita o teto.
         .route("/api/upload", post(upload_file).layer(DefaultBodyLimit::disable()))
         .route("/api/ws", get(ws_handler))
@@ -180,7 +185,7 @@ async fn main() {
     let (ip, porta) = args_do_servidor();
     let addr = SocketAddr::new(ip, porta);
 
-    println!("🚀 Pico IDE (Binário Único) rodando em {}:{}!", ip, porta);
+    println!("🚀 picoIDE rodando em {}:{}", ip, porta);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -205,7 +210,7 @@ async fn serve_icone() -> impl IntoResponse {
 }
 
 // --- LIBS DA INTERFACE ---
-// CodeMirror e xterm.js também vão embutidos, e não buscados em CDN: a placa
+// CodeMirror e xterm.js também vão embutidos, e não buscados em CDN: o host
 // pode não ter internet, e nesse caso o editor e o terminal simplesmente não
 // carregariam. Para trocar de versão, veja static/vendor/atualizar.sh.
 const JS: &str = "application/javascript; charset=utf-8";
@@ -448,7 +453,7 @@ async fn handle_terminal(socket: WebSocket, query: TerminalQuery, registro: Regi
     let (id, sessao, reatou) = match resolver_sessao(&registro, query) {
         Ok(v) => v,
         Err(erro) => {
-            let aviso = format!("\r\n[Pico IDE] Não consegui abrir o shell: {}\r\n", erro);
+            let aviso = format!("\r\n[picoIDE] Não consegui abrir o shell: {}\r\n", erro);
             let _ = ws_sender.send(Message::Text(aviso)).await;
             let _ = ws_sender.send(Message::Close(None)).await;
             return;
@@ -587,20 +592,58 @@ async fn list_files(Query(query): Query<FileQuery>) -> Json<Vec<FileNode>> {
     Json(files)
 }
 
+// Revisão independente de timestamp: editores e builds podem trocar um arquivo
+// mais de uma vez dentro do mesmo tick do filesystem, inclusive mantendo o
+// tamanho. FNV-1a basta aqui; não é assinatura criptográfica, é identidade de
+// conteúdo para impedir que o autosave pise numa alteração externa.
+fn revisao(dados: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in dados {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("\"{:016x}\"", hash)
+}
+
 // Devolve 404 quando o arquivo não existe mais, para o navegador conseguir
 // distinguir "arquivo apagado" de "arquivo com o texto 'Erro ao ler arquivo.'"
 // ao restaurar a última sessão.
 // 415 (e não 404) quando o arquivo existe mas não é texto: o editor não tem o
 // que mostrar, mas o arquivo é real e precisa continuar sendo o "arquivo
 // aberto" para poder ser baixado.
-async fn read_file(Query(query): Query<ReadQuery>) -> Result<String, StatusCode> {
-    let dados = fs::read(&query.path).map_err(|_| StatusCode::NOT_FOUND)?;
-    String::from_utf8(dados).map_err(|_| StatusCode::UNSUPPORTED_MEDIA_TYPE)
+async fn read_file(headers: HeaderMap, Query(query): Query<ReadQuery>) -> Response {
+    let dados = match fs::read(&query.path) {
+        Ok(dados) => dados,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let etag = revisao(&dados);
+
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == etag)
+    {
+        return StatusCode::NOT_MODIFIED.into_response();
+    }
+
+    let texto = match String::from_utf8(dados) {
+        Ok(texto) => texto,
+        Err(_) => return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response(),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_string()),
+            (header::ETAG, etag),
+        ],
+        texto,
+    )
+        .into_response()
 }
 
 // --- UPLOAD E DOWNLOAD ---
-// Os dois passam em fluxo, sem juntar o arquivo inteiro na memória: a placa
-// tem pouca RAM e o caso de uso é justamente mover binário de build.
+// Os dois passam em fluxo, sem juntar o arquivo inteiro na memória: assim
+// podem lidar com arquivos grandes sem consumir a mesma quantidade de RAM.
 
 // Nome de arquivo em cabeçalho HTTP não aceita acento cru, e "relatório.pdf"
 // é o caso comum aqui. Mandamos as duas formas: o ASCII para clientes velhos
@@ -688,9 +731,26 @@ async fn upload_file(
     Ok(total.to_string())
 }
 
-async fn save_file(Json(payload): Json<SaveRequest>) -> String {
-    match fs::write(&payload.path, &payload.content) {
-        Ok(_) => "Salvo com sucesso!".to_string(),
-        Err(e) => format!("Erro ao salvar: {}", e),
+async fn save_file(Json(payload): Json<SaveRequest>) -> Response {
+    if let Some(esperada) = payload.revision.as_deref() {
+        let atual = fs::read(&payload.path).ok().map(|dados| revisao(&dados));
+        if atual.as_deref() != Some(esperada) {
+            return (
+                StatusCode::CONFLICT,
+                "O arquivo foi alterado fora do editor.",
+            )
+                .into_response();
+        }
+    }
+
+    match fs::write(&payload.path, payload.content.as_bytes()) {
+        Ok(_) => (
+            StatusCode::OK,
+            [(header::ETAG, revisao(payload.content.as_bytes()))],
+            "Salvo com sucesso!",
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Erro ao salvar: {}", e))
+            .into_response(),
     }
 }

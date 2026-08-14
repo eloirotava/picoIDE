@@ -19,10 +19,10 @@ WS = URL.replace("http://", "ws://").replace("https://", "wss://") + "/api/ws"
 def exigir_offline(page, externas):
     """Corta todo request que não seja para o próprio servidor.
 
-    A placa pode não ter internet, então a interface tem de se sustentar só com
+    O servidor pode não ter internet, então a interface tem de se sustentar só com
     o que vem embutido no executável. Bloquear em vez de deixar passar é o que
     faz um `<script src="https://cdn...">` reintroduzido virar teste vermelho,
-    e não um sucesso que só falha na placa do usuário.
+    e não um sucesso que só falha no host do usuário.
     """
     def handler(route, request):
         if request.url.startswith(URL):

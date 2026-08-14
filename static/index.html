@@ -2,10 +2,10 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Pico IDE</title>
+    <title>picoIDE</title>
     <link rel="icon" type="image/svg+xml" href="icone.svg">
     
-    <!-- Tudo em /vendor vem embutido no executável, não de CDN: a placa pode
+    <!-- Tudo em /vendor vem embutido no executável, não de CDN: o servidor pode
          estar sem internet, e aí não haveria editor nem terminal. -->
     <link rel="stylesheet" href="vendor/codemirror/lib/codemirror.css">
     <link rel="stylesheet" href="vendor/codemirror/theme/dracula.css">
@@ -21,7 +21,7 @@
     <script src="vendor/codemirror/mode/htmlmixed/htmlmixed.js"></script>
     <script src="vendor/codemirror/mode/toml/toml.js"></script>
     <!-- meta.js mapeia extensão -> modo; os modos abaixo são os que
-         valem para o que se edita numa placa. Sem o modo carregado, o
+         cobrem os formatos mais comuns. Sem o modo carregado, o
          arquivo abre como texto puro em vez de quebrar. -->
     <script src="vendor/codemirror/mode/meta.js"></script>
     <script src="vendor/codemirror/mode/clike/clike.js"></script>
@@ -217,7 +217,7 @@
         // Cada arquivo aberto é uma aba com o seu próprio Doc do CodeMirror.
         // Guardar o Doc (em vez de só o texto) preserva cursor, seleção e
         // histórico de desfazer de cada arquivo ao alternar entre eles.
-        const abertos = [];   // { path, name, doc, binario, sujo }
+        const abertos = [];   // { path, name, doc, binario, sujo, revision, conflito, removido }
         let abaAtiva = -1;
 
         // Mantidos porque o resto da página (download, autosave) pergunta por
@@ -267,8 +267,9 @@
                 aba.onclick = () => ativarAba(i);
 
                 const nome = document.createElement('span');
-                nome.textContent = (a.sujo ? '• ' : '') + a.name;
-                if (a.sujo) nome.className = 'sujo';
+                const marca = a.conflito ? '⚠ ' : (a.removido ? '× ' : (a.sujo ? '• ' : ''));
+                nome.textContent = marca + a.name;
+                if (a.sujo || a.conflito || a.removido) nome.className = 'sujo';
                 aba.appendChild(nome);
 
                 const fechar = document.createElement('span');
@@ -280,6 +281,25 @@
 
                 barra.appendChild(aba);
             });
+        }
+
+        function apresentarEstado(a) {
+            if (!a) return;
+            if (abertos[abaAtiva] === a) {
+                const estado = a.conflito ? ' — conflito externo'
+                             : a.removido ? ' — removido no disco'
+                             : '';
+                document.getElementById('current-file').textContent =
+                    (a.binario ? `${a.name} (binário)` : a.name) + estado;
+
+                const btn = document.getElementById('btn-salvar');
+                if (a.conflito || a.removido) {
+                    btn.textContent = a.conflito ? 'Resolver conflito' : 'Recriar arquivo';
+                    btn.style.background = '#a1260d';
+                }
+                atualizarBotoes();
+            }
+            desenharAbasArquivos();
         }
 
         function ativarAba(i) {
@@ -297,14 +317,11 @@
             editor.setOption("readOnly", a.binario);
             setTimeout(() => { bloqueiaAutosaveInicial = false; }, 100);
 
-            document.getElementById('current-file').textContent =
-                a.binario ? `${a.name} (binário)` : a.name;
             const btnSalvar = document.getElementById("btn-salvar");
             btnSalvar.textContent = "Salvar (Ctrl+S)";
             btnSalvar.style.background = "#0e639c";
 
-            atualizarBotoes();
-            desenharAbasArquivos();
+            apresentarEstado(a);
             salvarAbas();
         }
 
@@ -330,7 +347,7 @@
         editor.on("change", () => {
             if (abaAtiva < 0 || bloqueiaAutosaveInicial) return;
             const alvo = abertos[abaAtiva];
-            if (!alvo || alvo.binario) return;
+            if (!alvo || alvo.binario || alvo.aplicandoExterno) return;
 
             alvo.sujo = true;
             desenharAbasArquivos();
@@ -549,19 +566,24 @@
         });
 
         async function abrirArquivo(caminho, nome) {
-            // Já aberto: só traz para a frente, sem recarregar do disco (o que
-            // descartaria edições ainda não salvas).
+            // Já aberto: traz para a frente e confere o disco. A conferência
+            // nunca descarta uma edição local; nesse caso ela marca conflito.
             const existente = abertos.findIndex(a => a.path === caminho);
-            if (existente >= 0) { ativarAba(existente); return; }
+            if (existente >= 0) {
+                ativarAba(existente);
+                atualizarArquivoAberto(abertos[existente]);
+                return;
+            }
 
             const res = await fetch(url(`api/read?path=${encodeURIComponent(caminho)}`));
 
             if (res.status === 415) {
                 // Binário: o editor não tem o que mostrar, mas o arquivo é
                 // real e vira uma aba mesmo assim — é assim que dá para
-                // baixá-lo, que é o único jeito de tirar um build da placa.
+                // baixá-lo, que é o jeito de tirar um build do servidor.
                 abertos.push({
                     path: caminho, name: nome, binario: true, sujo: false,
+                    revision: null, conflito: false, removido: false,
                     doc: CodeMirror.Doc("Arquivo binário", "javascript")
                 });
                 ativarAba(abertos.length - 1);
@@ -576,6 +598,7 @@
             const texto = await res.text();
             abertos.push({
                 path: caminho, name: nome, binario: false, sujo: false,
+                revision: res.headers.get('etag'), conflito: false, removido: false,
                 doc: CodeMirror.Doc(texto, modoDe(nome))
             });
             ativarAba(abertos.length - 1);
@@ -585,16 +608,48 @@
             // Salvar um binário gravaria o texto do aviso por cima dele.
             if (!alvo || alvo.binario) return;
 
+            const precisaConfirmar = alvo.conflito || alvo.removido;
+            if (precisaConfirmar && isAuto) {
+                apresentarEstado(alvo);
+                return;
+            }
+            if (precisaConfirmar && !confirm(
+                alvo.removido
+                    ? `"${alvo.name}" foi removido no disco. Recriar com o conteúdo do editor?`
+                    : `"${alvo.name}" mudou fora do picoIDE. Sobrescrever a versão do disco?`
+            )) return;
+
             const btnSalvar = document.getElementById("btn-salvar");
             const eraOAtivo = abertos[abaAtiva] === alvo;
             if (eraOAtivo) btnSalvar.textContent = isAuto ? "Autosalvando..." : "Salvando...";
 
-            await fetch(url('api/save'), {
+            const res = await fetch(url('api/save'), {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: alvo.path, content: alvo.doc.getValue() })
+                body: JSON.stringify({
+                    path: alvo.path,
+                    content: alvo.doc.getValue(),
+                    // null é uma sobrescrita explicitamente confirmada.
+                    revision: precisaConfirmar ? null : alvo.revision
+                })
             });
 
+            if (res.status === 409) {
+                alvo.conflito = true;
+                apresentarEstado(alvo);
+                return;
+            }
+            if (!res.ok) {
+                if (eraOAtivo) {
+                    btnSalvar.textContent = 'Erro ao salvar';
+                    btnSalvar.style.background = '#a1260d';
+                }
+                return;
+            }
+
+            alvo.revision = res.headers.get('etag');
             alvo.sujo = false;
+            alvo.conflito = false;
+            alvo.removido = false;
             desenharAbasArquivos();
 
             if (eraOAtivo) {
@@ -614,6 +669,65 @@
 
         function salvarArquivo(isAuto = false) {
             return salvarArquivoDe(abertos[abaAtiva], isAuto);
+        }
+
+        let atualizandoAbertos = false;
+
+        async function atualizarArquivoAberto(alvo) {
+            if (!alvo || alvo.binario) return;
+            const headers = {};
+            if (alvo.revision) headers['If-None-Match'] = alvo.revision;
+
+            let res;
+            try {
+                res = await fetch(url(`api/read?path=${encodeURIComponent(alvo.path)}`), { headers });
+            } catch (_) {
+                return; // uma queda de rede não transforma a aba em conflito
+            }
+
+            if (res.status === 304) return;
+            if (res.status === 404) {
+                alvo.removido = true;
+                if (alvo.sujo) alvo.conflito = true;
+                apresentarEstado(alvo);
+                return;
+            }
+            if (!res.ok) return;
+
+            const texto = await res.text();
+            const novaRevision = res.headers.get('etag');
+            if (alvo.sujo) {
+                alvo.conflito = true;
+                apresentarEstado(alvo);
+                return;
+            }
+
+            const eraOAtivo = abertos[abaAtiva] === alvo;
+            const cursor = eraOAtivo ? editor.getCursor() : null;
+            const scroll = eraOAtivo ? editor.getScrollInfo() : null;
+            alvo.aplicandoExterno = true;
+            alvo.doc.setValue(texto);
+            alvo.aplicandoExterno = false;
+            alvo.revision = novaRevision;
+            alvo.conflito = false;
+            alvo.removido = false;
+            if (eraOAtivo) {
+                editor.setCursor(cursor);
+                editor.scrollTo(scroll.left, scroll.top);
+                apresentarEstado(alvo);
+            } else {
+                desenharAbasArquivos();
+            }
+        }
+
+        async function atualizarArquivosAbertos() {
+            if (atualizandoAbertos) return;
+            atualizandoAbertos = true;
+            try {
+                await Promise.all(Array.from(abertos, atualizarArquivoAberto));
+            } finally {
+                atualizandoAbertos = false;
+            }
         }
 
         // --- GATILHOS DE AUTO-UPDATE ---
@@ -644,8 +758,16 @@
         setInterval(() => {
             if (document.visibilityState === 'visible') {
                 mudarRaiz();
+                atualizarArquivosAbertos();
             }
         }, 10000);
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                mudarRaiz();
+                atualizarArquivosAbertos();
+            }
+        });
 
         // --- TERMINAIS ---
         // O servidor já mantém uma sessão por id; aqui cada aba é uma sessão.
@@ -665,7 +787,7 @@
         let proximoId = 1;      // vira o "Terminal N" da aba; nunca é reusado
         let focoTerminal = null;
 
-        // A Clipboard API só existe em contexto seguro. Acessar a placa por
+        // A Clipboard API só existe em contexto seguro. Acessar o servidor por
         // http://IP-DA-MAQUINA:8080 NÃO é contexto seguro (só localhost e
         // https são), então o caminho antigo com execCommand precisa continuar
         // aqui: é ele que roda no uso real.
@@ -1237,12 +1359,12 @@
                     // por cima do que já estava aqui.
                     t.term.reset();
                     t.term.write(t.tentativas > 0
-                        ? '\x1b[32m[Pico IDE] Reconectado.\x1b[0m\r\n'
-                        : '\x1b[32m[Pico IDE] Sessão retomada.\x1b[0m\r\n');
+                        ? '\x1b[32m[picoIDE] Reconectado.\x1b[0m\r\n'
+                        : '\x1b[32m[picoIDE] Sessão retomada.\x1b[0m\r\n');
                 } else {
                     t.term.write(t.tentativas > 0
-                        ? '\r\n\x1b[32m[Pico IDE] Reconectado (shell novo).\x1b[0m\r\n'
-                        : '\x1b[32m[Pico IDE] Conectado como root no Banana Pi M1!\x1b[0m\r\n');
+                        ? '\r\n\x1b[32m[picoIDE] Reconectado com um shell novo.\x1b[0m\r\n'
+                        : '\x1b[32m[picoIDE] Shell conectado.\x1b[0m\r\n');
                 }
                 t.tentativas = 0;
                 return true;
@@ -1267,13 +1389,13 @@
                     // próxima visita tentaria reatar num shell que não existe.
                     t.sessao = null;
                     salvarTerminais();
-                    t.term.write('\r\n\x1b[33m[Pico IDE] Sessão encerrada. Aperte Enter para abrir um shell novo.\x1b[0m\r\n');
+                    t.term.write('\r\n\x1b[33m[picoIDE] Sessão encerrada. Aperte Enter para abrir um shell novo.\x1b[0m\r\n');
                     return;
                 }
                 // Queda de rede: volta sozinho, com espera crescente até 10s.
                 const espera = Math.min(1000 * Math.pow(2, t.tentativas), 10000);
                 t.tentativas++;
-                t.term.write(`\r\n\x1b[31m[Pico IDE] Conexão perdida. Reconectando em ${espera / 1000}s...\x1b[0m\r\n`);
+                t.term.write(`\r\n\x1b[31m[picoIDE] Conexão perdida. Reconectando em ${espera / 1000}s...\x1b[0m\r\n`);
                 setTimeout(() => conectar(t), espera);
             };
         }
@@ -1338,9 +1460,12 @@
                     t.ws.send(JSON.stringify({ type: "input", data: data }));
 
                     // Gatilho 3: Enter no terminal pode ter mexido em arquivo;
-                    // meio segundo depois, atualiza a árvore.
+                    // meio segundo depois, atualiza a árvore e as abas.
                     if (data.includes('\r')) {
-                        setTimeout(mudarRaiz, 500);
+                        setTimeout(() => {
+                            mudarRaiz();
+                            atualizarArquivosAbertos();
+                        }, 500);
                     }
                 }
             });

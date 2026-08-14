@@ -1,12 +1,10 @@
 # picoIDE
 
-IDE mínima que roda direto na placa: editor com realce de sintaxe, árvore de
-arquivos e um terminal real, servidos por um único executável. O `index.html` e
-as libs de frontend (CodeMirror, xterm.js) vão embutidos no binário, então não
-há nada para instalar além do próprio arquivo — e a placa não precisa de
-internet para a interface abrir.
-
-Feita para um Banana Pi M1 (Allwinner A20, ARMv7).
+IDE mínima e portátil: editor com realce de sintaxe, árvore de arquivos e um
+terminal real, servidos por um único executável. O `index.html` e as libs de
+frontend (CodeMirror, xterm.js) vão embutidos no binário, então não há nada
+para instalar além do próprio arquivo — e o host não precisa de internet para
+a interface abrir. Há builds para Linux x86-64, ARM de 32/64 bits e Windows.
 
 ## Rodando
 
@@ -16,7 +14,9 @@ Baixe o binário da sua arquitetura na [última release](../../releases/latest):
 | --- | --- | --- |
 | `picoide-amd64` | PC/servidor x86-64 | `x86_64` |
 | `picoide-arm64` | ARM 64-bit (Raspberry Pi 3/4/5 em SO 64-bit) | `aarch64` |
-| `picoide-armhf` | ARM 32-bit hard-float (Banana Pi M1) | `armv7l` |
+| `picoide-armhf` | Linux ARM 32-bit hard-float | `armv7l` |
+| `picoide-win64.exe` | Windows 64-bit | — |
+| `picoide-win32.exe` | Windows 32-bit | — |
 
 ```sh
 chmod +x picoide-amd64
@@ -126,11 +126,11 @@ Detalhes em [`tests/e2e/README.md`](tests/e2e/README.md).
 
 Nada roda sozinho a cada push: o único workflow é o **Release**, e ele só sai
 quando alguém aperta o botão em Actions → Release → Run workflow, informando a
-versão (`vX.Y.Z`). Ele compila os três binários estáticos, confere que cada um
-saiu estático e na arquitetura certa, sobe cada um (com qemu onde não é a
-arquitetura do runner) para ver a página e a API responderem, e só então cria a
-tag e publica a release com os binários e o `SHA256SUMS`. Rode a suíte de ponta
-a ponta na sua máquina antes de publicar.
+versão (`vX.Y.Z`). Ele compila os cinco binários, confere a arquitetura e que
+os alvos Linux saíram estáticos, sobe os três executáveis Linux (com qemu onde
+não é a arquitetura do runner) para ver a página e a API responderem, e só
+então cria a tag e publica a release com os binários e o `SHA256SUMS`. Rode a
+suíte de ponta a ponta na sua máquina antes de publicar.
 
 ## Atrás de um proxy reverso
 
@@ -231,7 +231,8 @@ Para mover arquivos: o 📤 na barra lateral (ou arrastar da sua máquina para
 cima dela) envia para a pasta aberta, e o **⬇ Baixar** da barra de cima baixa o
 arquivo aberto. Clicar num binário na árvore o abre como arquivo atual — o
 editor mostra só `Arquivo binário` e o salvar fica desligado, mas o download
-funciona. É assim que se tira da placa o executável que o build acabou de gerar.
+funciona. É assim que se tira do servidor o executável que o build acabou de
+gerar.
 
 Os dois lados passam em fluxo, sem juntar o arquivo inteiro na memória, e o
 `POST /api/upload` não tem teto de tamanho: o que limita é o disco.
@@ -240,9 +241,14 @@ No terminal, **selecionar já copia** (como no ttyd), e colar é `Ctrl+V`. O
 `Ctrl+C` fica intocado: no terminal ele interrompe o processo, e sobrecarregar
 essa tecla deixaria ambígua a mais importante das duas funções.
 
-Acessar a placa por `http://IP` não é contexto seguro, e ali a Clipboard API do
-navegador nem existe — por isso o copiar tem um caminho alternativo, que é
+Acessar o servidor por `http://IP` não é contexto seguro, e ali a Clipboard API
+do navegador nem existe — por isso o copiar tem um caminho alternativo, que é
 justamente o que roda no uso real.
+
+Arquivos abertos também acompanham alterações feitas por Git, pelo terminal ou
+por outro editor. Uma aba sem edições locais é recarregada automaticamente; se
+os dois lados mudaram, o picoIDE preserva o texto do editor, bloqueia o autosave
+e pede confirmação antes de sobrescrever a versão que está no disco.
 
 As divisórias entre a árvore, o editor e o terminal são **arrastáveis** — assim
 como as que separam terminais lado a lado —, e os tamanhos ficam no
