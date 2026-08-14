@@ -153,7 +153,7 @@ def testar_copiar_colar(page, falhas):
         falhas.append("Ctrl+C deixou de interromper o processo")
 
     # Selecionar já copia. Forçamos o caminho sem Clipboard API, que é o que
-    # roda de verdade: acessar a placa por http://IP não é contexto seguro.
+    # roda de verdade: acessar o servidor por http://IP não é contexto seguro.
     page.evaluate("""() => Object.defineProperty(window, 'isSecureContext',
                         { value: false, configurable: true })""")
     page.evaluate("() => window.term.clearSelection()")

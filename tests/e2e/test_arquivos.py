@@ -1,6 +1,6 @@
 """Subir e baixar arquivos.
 
-O caso que motiva: tirar da placa um binário que o build acabou de gerar, e
+O caso que motiva: tirar do servidor um binário que o build acabou de gerar, e
 colocar um arquivo lá sem precisar de scp. Por isso os testes usam conteúdo
 binário aleatório e conferem byte a byte — um bug de encoding ou um truncamento
 no meio do caminho passaria despercebido com texto curto.

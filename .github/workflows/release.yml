@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       versao:
-        description: 'Versão da release (com o v na frente, ex.: v0.0.1)'
+        description: 'Versão da release (com o v na frente, ex.: v0.0.3)'
         required: true
-        default: v0.0.1
+        default: v0.0.3
 
 concurrency:
   group: release-${{ github.ref }}
@@ -168,7 +168,7 @@ jobs:
 
   release:
     name: Publica a release
-    # Só publica binário que subiu de verdade nos três alvos.
+    # Só publica quando os cinco builds terminaram e os três Linux subiram.
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -180,7 +180,7 @@ jobs:
         run: |
           # Versão fora do padrão vira tag torta e quebra o link da
           # "última release" que o README manda o usuário seguir.
-          echo "$VERSAO" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+' \
+          echo "$VERSAO" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::Versão inválida: $VERSAO (esperado vX.Y.Z)"; exit 1; }
 
       - uses: actions/download-artifact@v4
@@ -207,7 +207,7 @@ jobs:
           | --- | --- |
           | \`picoide-amd64\` | PC/servidor Linux x86-64 |
           | \`picoide-arm64\` | Linux ARM 64-bit (Raspberry Pi 3/4/5 em SO 64-bit, Orange Pi, etc) |
-          | \`picoide-armhf\` | Linux ARM 32-bit hard-float (Banana Pi M1, Raspberry Pi em SO 32-bit) |
+          | \`picoide-armhf\` | Linux ARM 32-bit hard-float |
           | \`picoide-win64.exe\` | Windows 64-bit |
           | \`picoide-win32.exe\` | Windows 32-bit |
 
