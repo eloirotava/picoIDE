@@ -163,7 +163,7 @@
                 bottom: calc(48px + var(--teclado-virtual) + env(safe-area-inset-bottom)); transform: translateX(-50%);
                 border: 1px solid #555; border-radius: 16px; overflow: hidden; background: #252526;
                 box-shadow: 0 2px 10px #0008; }
-            #mobile-pager button { min-width: 38px; min-height: 30px; padding: 0 8px;
+            #mobile-pager button { min-width: 38px; min-height: 30px; padding: 0 9px;
                 color: #ccc; background: transparent; border: 0; font-size: 15px; }
             #mobile-pager button.ativo { color: #fff; background: #0e639c; }
             #mobile-keybar { display: flex; position: fixed; z-index: 21; left: 0; right: 0;
@@ -217,9 +217,9 @@
     <div id="fantasma-aba"></div>
     <div id="indicador-solta"></div>
     <div id="mobile-pager" aria-label="Trocar de tela">
-        <button data-tela="files" title="Arquivos">☰</button>
-        <button data-tela="terminal" title="Terminal">›_</button>
-        <button data-tela="editor" title="Editor">✎</button>
+        <button data-tela="files" title="Arquivos">Arquivos</button>
+        <button data-tela="terminal" title="Terminal">Terminal</button>
+        <button data-tela="editor" title="Editor">Editor</button>
     </div>
     <div id="mobile-keybar" aria-label="Teclas extras para programação"></div>
 
@@ -1675,8 +1675,12 @@
         let gestoMovel = null;
         document.addEventListener('pointerdown', e => {
             if (!estaNoMovel() || e.pointerType !== 'touch') return;
-            // A borda deixa o conteúdo receber normalmente toques e scrolls.
-            if (e.clientX > 28 && e.clientX < window.innerWidth - 28) return;
+            // Começar exatamente na borda aciona o "voltar" do navegador em
+            // vários celulares. A faixa logo DEPOIS dela conserva esse gesto
+            // do sistema e ainda dá uma alça confiável para trocar de tela.
+            const dentroDaAlca = (e.clientX >= 20 && e.clientX <= 76)
+                || (e.clientX >= window.innerWidth - 76 && e.clientX <= window.innerWidth - 20);
+            if (!dentroDaAlca) return;
             gestoMovel = { x: e.clientX, y: e.clientY, id: e.pointerId };
         }, { passive: true });
         document.addEventListener('pointerup', e => {
