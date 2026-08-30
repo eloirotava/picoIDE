@@ -241,6 +241,14 @@ No terminal, **selecionar já copia** (como no ttyd), e colar é `Ctrl+V`. O
 `Ctrl+C` fica intocado: no terminal ele interrompe o processo, e sobrecarregar
 essa tecla deixaria ambígua a mais importante das duas funções.
 
+O terminal também honra **OSC 52** (escrever na área de transferência). É o
+que o `/copy` do Codex CLI, o yank do Neovim e afins usam quando não têm
+clipboard nativo — sem o handler, a sequência chega no xterm.js e some, e a
+cópia "funciona" no app sem nunca cair no clipboard do navegador. Leitura via
+OSC 52 (`?`) é ignorada de propósito. Se o Codex estiver **dentro do tmux**,
+ainda precisa de `set -g allow-passthrough on` no tmux para o envelope DCS
+chegar até aqui.
+
 Acessar o servidor por `http://IP` não é contexto seguro, e ali a Clipboard API
 do navegador nem existe — por isso o copiar tem um caminho alternativo, que é
 justamente o que roda no uso real.

@@ -893,8 +893,12 @@
         // http://IP-DA-MAQUINA:8080 NÃO é contexto seguro (só localhost e
         // https são), então o caminho antigo com execCommand precisa continuar
         // aqui: é ele que roda no uso real.
-        async function copiarSelecao(term) {
-            const texto = term.getSelection();
+        //
+        // Limite do payload OSC 52: apps como o Codex /copy podem mandar
+        // trechos grandes; acima disso ignoramos em vez de travar o navegador.
+        const MAX_OSC52 = 1024 * 1024;
+
+        async function escreverClipboard(texto) {
             if (!texto) return;
 
             const anterior = document.activeElement;
@@ -916,6 +920,46 @@
             // Devolve o foco a quem tinha: copiar não pode tirar o teclado do
             // terminal, nem roubá-lo de outro campo em que você estava.
             if (anterior && anterior.focus) anterior.focus();
+        }
+
+        async function copiarSelecao(term) {
+            await escreverClipboard(term.getSelection());
+        }
+
+        // O xterm.js não trata OSC 52 sozinho. Sem este handler, o /copy do
+        // Codex (e o yank do Neovim, etc.) chega no parser e some: a sequência
+        // é descartada e a área de transferência do navegador não muda.
+        // Formato: ESC ] 52 ; <sel> ; <base64> BEL/ST — sel tipicamente "c".
+        // Leitura (payload "?") é ignorada de propósito: qualquer app no PTY
+        // poderia exfiltrar o clipboard do usuário.
+        function registrarOsc52(term) {
+            term.parser.registerOscHandler(52, data => {
+                // Args: "<selecao>;<base64|?>". Seleção é um subconjunto de
+                // c/p/s/0-7 (clipboard, primary, select, cut buffers).
+                const sep = data.indexOf(';');
+                if (sep === -1) return true;
+                const selecao = data.slice(0, sep);
+                if (!/^[cps01234567]*$/.test(selecao)) return true;
+
+                const payload = data.slice(sep + 1).replace(/\s/g, '');
+                if (!payload || payload === '?') return true;
+                if (payload.length > Math.ceil((MAX_OSC52 * 4) / 3) + 4) return true;
+                if (!/^[A-Za-z0-9+/]*={0,2}$/.test(payload)) return true;
+
+                let texto;
+                try {
+                    const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0));
+                    if (bytes.byteLength > MAX_OSC52) return true;
+                    texto = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                } catch (e) {
+                    return true;
+                }
+
+                // Fora do parser: writeText/execCommand não podem atrasar o
+                // desenho das próximas sequências de escape.
+                queueMicrotask(() => { void escreverClipboard(texto); });
+                return true;
+            });
         }
 
         // Só para o Ctrl+Shift+V: o navegador não dispara colar nativo nessa
@@ -1514,6 +1558,7 @@
             const fit = new FitAddon.FitAddon();
             term.loadAddon(fit);
             term.open(tela);
+            registrarOsc52(term);
 
             const t = { id: proximoId++, term, fit, ws: null, sessao, tentativas: 0, encerrado: false, tela };
             terminais.push(t);

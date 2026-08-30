@@ -180,6 +180,43 @@ def testar_copiar_colar(page, falhas):
     print("OK: selecionar já copia, e o Ctrl+C segue interrompendo")
 
 
+def testar_osc52(page, falhas):
+    """Apps no PTY (Codex /copy, Neovim) mandam OSC 52; o xterm tem de honrar."""
+    # Mesmo caminho do uso real: http://IP não é contexto seguro.
+    page.evaluate("""() => Object.defineProperty(window, 'isSecureContext',
+                        { value: false, configurable: true })""")
+
+    # Simula o que o PTY escreve quando o Codex faz /copy.
+    page.evaluate("""() => {
+        const b64 = btoa('OSC52_CODEX_OK');
+        window.term.write('\\x1b]52;c;' + b64 + '\\x07');
+    }""")
+    page.wait_for_timeout(400)
+
+    page.evaluate("""() => {
+        const a = document.createElement('textarea');
+        a.id = 'prova-osc52';
+        a.style.cssText = 'position:fixed;top:0;left:0;z-index:9999';
+        document.body.appendChild(a);
+        a.focus();
+    }""")
+    page.keyboard.press("Control+v")
+    page.wait_for_timeout(800)
+    prova = page.evaluate("() => document.getElementById('prova-osc52').value")
+    page.evaluate("() => document.getElementById('prova-osc52').remove()")
+    if "OSC52_CODEX_OK" not in (prova or ""):
+        falhas.append(f"OSC 52 não copiou para o clipboard: {str(prova)[:80]!r}")
+
+    # Query ("?") é engolida: não pode pintar a sequência quebrada na tela.
+    page.evaluate("() => window.term.write('\\x1b]52;c;?\\x07')")
+    page.wait_for_timeout(300)
+    tela = ler_terminal(page)
+    if "]52;c;?" in tela or "52;c;?" in tela:
+        falhas.append(f"query OSC 52 vazou na tela: {tela[-200:]!r}")
+
+    print("OK: OSC 52 copia para o clipboard (e query é ignorada)")
+
+
 def testar_restauracao(pw, pasta, falhas):
     """As duas listas de abas precisam voltar depois do F5."""
     navegador = abrir_navegador(pw)
@@ -229,6 +266,7 @@ if __name__ == "__main__":
                 testar_arquivos(page, pasta, falhas)
                 testar_terminais(page, falhas)
                 testar_copiar_colar(page, falhas)
+                testar_osc52(page, falhas)
                 if erros:
                     falhas.append(f"erros de JS na página: {erros}")
                 navegador.close()
