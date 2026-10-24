@@ -1,0 +1,54 @@
+# Build de teste: todo push num branch que não seja o main gera o binário
+# arm64 estático como artefato do run, sem tag nem release. Serve para
+# experimentar um branch num aparelho ARM sem compilar nele.
+#
+#   gh run download <id> -n picoide-arm64
+name: Build de branch
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Executável arm64 estático
+    runs-on: ubuntu-latest
+    env:
+      ALVO: aarch64-unknown-linux-musl
+      RUSTFLAGS: -C linker=rust-lld
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-unknown-linux-musl
+
+      - name: Compila
+        run: cargo build --release --target "$ALVO"
+
+      - name: Confere que saiu estático e ARM64
+        run: |
+          BIN="target/$ALVO/release/meu-mini-ide"
+          file "$BIN"
+          if readelf -d "$BIN" 2>/dev/null | grep -q NEEDED; then
+            echo "::error::O binário ficou dinâmico (tem dependências NEEDED)."
+            exit 1
+          fi
+          file "$BIN" | grep -q 'ARM aarch64' || { echo "::error::Não é aarch64."; exit 1; }
+          cp "$BIN" picoide-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: picoide-arm64
+          path: picoide-arm64
+          if-no-files-found: error
+          retention-days: 14
