@@ -1798,8 +1798,12 @@
         // Arrastar o dedo na vertical rola o histórico do terminal. O toque
         // nativo do xterm no celular é instável (às vezes nem rola, às vezes
         // o navegador puxa a página), então o arrasto é convertido em linhas
-        // aqui, com inércia ao soltar. Um toque sem arrasto segue para o
-        // xterm normalmente e abre o teclado.
+        // aqui, com inércia ao soltar.
+        //
+        // O foco também é decidido aqui: o xterm foca (e o celular abre o
+        // teclado) em qualquer mousedown, e o Chrome do Android gera um no
+        // fim de arrastos. Então o mousedown não chega ao xterm no celular, e
+        // só um toque que não se moveu foca o terminal.
         function rolagemPorToque(t) {
             let inicio = null, sobra = 0, ultimoY = 0, ultimoT = 0, velocidade = 0, inercia = null;
 
@@ -1816,24 +1820,33 @@
                 }
             }
 
+            t.tela.addEventListener('mousedown', e => {
+                if (!estaNoMovel()) return;
+                e.preventDefault();
+                e.stopPropagation();
+            }, { capture: true });
+
             t.tela.addEventListener('touchstart', e => {
                 if (!estaNoMovel() || e.touches.length !== 1) { inicio = null; return; }
                 cancelAnimationFrame(inercia);
                 const y = e.touches[0].clientY;
-                inicio = { x: e.touches[0].clientX, y, arrastando: false };
+                inicio = { x: e.touches[0].clientX, y, moveu: false, rolando: false };
                 ultimoY = y; ultimoT = performance.now(); velocidade = 0; sobra = 0;
             }, { passive: true, capture: true });
 
             t.tela.addEventListener('touchmove', e => {
                 if (!inicio) return;
-                // Na tela alternativa não há histórico: o arrasto fica com o xterm.
-                if (t.term.buffer.active.type === 'alternate') { inicio = null; return; }
                 const toque = e.touches[0];
-                if (!inicio.arrastando) {
-                    const dy = toque.clientY - inicio.y, dx = toque.clientX - inicio.x;
-                    if (Math.abs(dy) < 8 || Math.abs(dy) < Math.abs(dx)) return;
-                    inicio.arrastando = true;
+                const dy = toque.clientY - inicio.y, dx = toque.clientX - inicio.x;
+                if (!inicio.moveu) {
+                    if (Math.hypot(dx, dy) < 10) return;
+                    inicio.moveu = true;
+                    // Na tela alternativa (vim, less) não há histórico: o
+                    // arrasto fica com o xterm, que o traduz para o programa.
+                    inicio.rolando = Math.abs(dy) >= Math.abs(dx)
+                        && t.term.buffer.active.type !== 'alternate';
                 }
+                if (!inicio.rolando) return;
                 e.preventDefault();
                 e.stopPropagation();
                 const agora = performance.now();
@@ -1845,11 +1858,15 @@
 
             t.tela.addEventListener('touchend', e => {
                 if (!inicio) return;
-                const arrastou = inicio.arrastando;
+                const { moveu, rolando } = inicio;
                 inicio = null;
-                if (!arrastou) return;
-                // Sem isto o fim do arrasto vira um "toque" e abre o teclado.
+                if (!moveu) {
+                    t.term.focus();
+                    return;
+                }
+                // Sem isto o navegador ainda pode tratar o fim como um toque.
                 e.preventDefault();
+                if (!rolando) return;
                 e.stopPropagation();
                 let v = velocidade * 16;
                 const passo = () => {
@@ -1860,6 +1877,8 @@
                 };
                 passo();
             }, { passive: false, capture: true });
+
+            t.tela.addEventListener('touchcancel', () => { inicio = null; }, { capture: true });
         }
 
         function ajustarTecladoVirtual() {

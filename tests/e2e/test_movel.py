@@ -44,6 +44,19 @@ def arrastar(page, x, y0, y1):
     time.sleep(1.2)  # deixa a inércia assentar
 
 
+def tocar(page, x, y):
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+    time.sleep(0.05)
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+    time.sleep(0.4)
+
+
+def terminal_focado(page):
+    return page.evaluate(
+        "document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')")
+
+
 def run(pw, falhas):
     navegador = abrir_navegador(pw)
     # is_mobile faz o Chromium usar a viewport real de telefone; sem a meta
@@ -115,12 +128,21 @@ def run(pw, falhas):
         falhas.append(f"o scrollback não guardou a saída (viewportY={base})")
     caixa = page.locator("#terminal-container").bounding_box()
     x = caixa["x"] + caixa["width"] / 2
+    page.evaluate("document.activeElement.blur()")
     arrastar(page, x, caixa["y"] + 120, caixa["y"] + 520)
+    # Arrastar é ler o histórico: abrir o teclado do celular aí atrapalha.
+    if terminal_focado(page):
+        falhas.append("arrastar no terminal focou o xterm (abre o teclado do celular)")
     depois = topo_visivel(page)
     if depois >= base - 10:
         falhas.append(f"arrastar o dedo não rolou o histórico ({base} -> {depois})")
     if page.locator("#sidebar").is_visible():
         falhas.append("arrastar no terminal trocou de tela")
+
+    # Já um toque parado é o pedido de digitar.
+    tocar(page, x, caixa["y"] + 200)
+    if not terminal_focado(page):
+        falhas.append("um toque no terminal não o focou")
 
     page.locator('#mobile-keybar [data-tecla="⤓"]').click()
     if topo_visivel(page) != base:
