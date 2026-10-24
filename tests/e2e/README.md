@@ -17,6 +17,7 @@ a um F5 e o terminal não cair sozinho.
 | `test_realce.py` | 20 tipos de arquivo abrem com o modo certo do CodeMirror e de fato coloridos; extensão desconhecida vira texto puro em vez de JavaScript. |
 | `test_persistencia.py` | Depois de um reload voltam a pasta, a árvore expandida, o arquivo aberto e o conteúdo no editor — e o terminal é o mesmo shell de antes, com variável e histórico intactos. |
 | `test_reconexao.py` | Derruba o servidor de verdade e confere que o terminal reconecta sozinho; e que um `exit` não vira laço de reconexão. |
+| `test_movel.py` | Em tela de celular o terminal ocupa tudo e não fica atrás da faixa de teclas, arquivos e editor abrem por cima sem animação, a caixa de texto executa o que foi escrito, e arrastar o dedo ou os botões Rol↑/⤓ rolam o histórico. |
 
 ## Rodando
 

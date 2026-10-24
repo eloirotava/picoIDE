@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <title>picoIDE</title>
     <link rel="icon" type="image/svg+xml" href="icone.svg">
     
@@ -128,26 +128,20 @@
         .nova-aba, .dividir-aba { background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 10px; font-size: 14px; }
         .nova-aba:hover, .dividir-aba:hover { color: #fff; }
 
-        /* No telefone o picoIDE não tenta encolher a mesa inteira. Cada área
-           vira uma tela: o terminal fica no centro, com arquivos à esquerda e
-           editor à direita. O desktop continua exatamente com a grade acima. */
-        #mobile-pager, #mobile-keybar { display: none; }
+        /* No telefone o terminal é a tela. Arquivos e editor abrem por cima
+           dele, sem deslizar, a partir de botões na faixa de teclas; o
+           desktop continua exatamente com a grade acima. */
+        #mobile-keybar, #mobile-compor { display: none; }
         @media (max-width: 700px) {
             body { display: block; height: 100dvh; min-height: 100dvh; overflow: hidden;
-                   --teclado-virtual: 0px; }
+                   --teclado-virtual: 0px; --rodape-movel: 42px; }
             #sidebar, #editor-container, #terminal-container {
                 position: absolute; inset: 0; z-index: 1; border: 0;
-                transition: transform 190ms ease, opacity 190ms ease;
-                will-change: transform;
+                bottom: calc(var(--rodape-movel) + var(--teclado-virtual) + env(safe-area-inset-bottom));
             }
-            #sidebar { transform: translateX(-100%); }
-            #terminal-container { transform: translateX(0); padding-bottom: calc(44px + env(safe-area-inset-bottom)); }
-            #editor-container { transform: translateX(100%); }
-            body.mobile-files #sidebar, body.mobile-editor #editor-container { transform: translateX(0); z-index: 3; }
-            body.mobile-files #terminal-container { transform: translateX(100%); }
-            body.mobile-editor #terminal-container { transform: translateX(-100%); }
-            body.mobile-files #editor-container { transform: translateX(100%); }
-            body.mobile-editor #sidebar { transform: translateX(-100%); }
+            #sidebar, #editor-container { display: none; z-index: 3; }
+            body.mobile-files #sidebar, body.mobile-editor #editor-container { display: flex; }
+            body.mobile-files #terminal-container, body.mobile-editor #terminal-container { visibility: hidden; }
             #divisoria-lateral, #divisoria-terminal { display: none; }
             #sidebar-header { padding: 8px; }
             #file-list { padding: 8px; }
@@ -158,14 +152,20 @@
             #btn-baixar-atual, #btn-salvar { min-height: 34px; padding: 5px 8px; }
             .CodeMirror { font-size: 16px; }
             .terminal { padding: 6px; }
+            /* A rolagem pelo dedo é feita à mão (ver rolagemPorToque): o
+               navegador não pode transformar o arrasto em zoom ou pull-to-refresh. */
+            #terminal-container .xterm { touch-action: none; }
             .barra-abas { min-height: 36px; }
-            #mobile-pager { display: flex; position: fixed; z-index: 20; left: 50%;
-                bottom: calc(48px + var(--teclado-virtual) + env(safe-area-inset-bottom)); transform: translateX(-50%);
-                border: 1px solid #555; border-radius: 16px; overflow: hidden; background: #252526;
-                box-shadow: 0 2px 10px #0008; }
-            #mobile-pager button { min-width: 38px; min-height: 30px; padding: 0 9px;
-                color: #ccc; background: transparent; border: 0; font-size: 15px; }
-            #mobile-pager button.ativo { color: #fff; background: #0e639c; }
+            #mobile-compor { position: fixed; z-index: 21; left: 0; right: 0;
+                bottom: calc(42px + var(--teclado-virtual) + env(safe-area-inset-bottom));
+                gap: 5px; padding: 5px; background: #252526; border-top: 1px solid #444;
+                box-sizing: border-box; align-items: flex-end; }
+            body.compondo #mobile-compor { display: flex; }
+            #mobile-compor textarea { flex: 1; min-height: 38px; max-height: 30vh; resize: none;
+                box-sizing: border-box; padding: 7px; color: #eee; background: #1e1e1e;
+                border: 1px solid #555; border-radius: 4px; font: 16px sans-serif; }
+            #mobile-compor button { height: 38px; padding: 0 12px; color: #fff; background: #0e639c;
+                border: 0; border-radius: 4px; font-size: 15px; }
             #mobile-keybar { display: flex; position: fixed; z-index: 21; left: 0; right: 0;
                 bottom: calc(var(--teclado-virtual) + env(safe-area-inset-bottom)); height: 42px;
                 align-items: center; gap: 4px; padding: 3px 5px; overflow-x: auto;
@@ -174,10 +174,8 @@
             #mobile-keybar button { flex: 0 0 auto; min-width: 34px; height: 32px; padding: 0 8px;
                 color: #eee; background: #3a3d41; border: 1px solid #555; border-radius: 4px;
                 font: 14px monospace; }
-            #mobile-keybar button.modificador { background: #0e639c; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            #sidebar, #editor-container, #terminal-container { transition: none; }
+            #mobile-keybar button.modificador, #mobile-keybar button.ativo { background: #0e639c; }
+            #mobile-keybar .separador { flex: 0 0 1px; align-self: stretch; margin: 4px 2px; background: #555; }
         }
     </style>
 </head>
@@ -216,10 +214,9 @@
     <div id="deposito-telas"></div>
     <div id="fantasma-aba"></div>
     <div id="indicador-solta"></div>
-    <div id="mobile-pager" aria-label="Trocar de tela">
-        <button data-tela="files" title="Arquivos">Arquivos</button>
-        <button data-tela="terminal" title="Terminal">Terminal</button>
-        <button data-tela="editor" title="Editor">Editor</button>
+    <div id="mobile-compor">
+        <textarea id="texto-compor" rows="1" placeholder="Escreva e envie ao terminal" autocomplete="on" autocapitalize="sentences"></textarea>
+        <button id="btn-enviar-compor" title="Enviar texto e Enter">Enviar</button>
     </div>
     <div id="mobile-keybar" aria-label="Teclas extras para programação"></div>
 
@@ -242,9 +239,9 @@
         }
 
         // --- NAVEGAÇÃO DE TELEFONE ---
-        // Arquivos, terminal e editor são páginas vizinhas. Só aceitamos o
-        // gesto começando na borda: no meio da tela ele continuaria brigando
-        // com a seleção e o scroll natural do xterm e do editor.
+        // O terminal é a tela de base; arquivos e editor aparecem por cima
+        // dele, trocados pelos botões da faixa de teclas. Sem slide e sem
+        // gesto lateral: arrastar o dedo no terminal é rolar o histórico.
         const midiaMovel = window.matchMedia('(max-width: 700px)');
         let telaMovel = 'terminal';
 
@@ -256,17 +253,17 @@
             telaMovel = destino;
             document.body.classList.remove('mobile-files', 'mobile-terminal', 'mobile-editor');
             document.body.classList.add('mobile-' + destino);
-            document.querySelectorAll('#mobile-pager button').forEach(b => {
-                b.classList.toggle('ativo', b.dataset.tela === destino);
+            document.querySelectorAll('#mobile-keybar [data-tela]').forEach(b => {
+                b.classList.toggle('ativo', b.dataset.tela === destino && destino !== 'terminal');
             });
-            // Espera o fim do slide para o xterm medir a largura definitiva.
-            setTimeout(() => {
+            // Só depois do reflow o xterm e o CodeMirror medem a caixa certa.
+            requestAnimationFrame(() => {
                 if (!estaNoMovel() || telaMovel !== destino) return;
                 if (destino === 'terminal' && typeof ajustarVisiveis === 'function') {
                     ajustarVisiveis({ avisarShell: true });
                 }
                 if (destino === 'editor' && editor) editor.refresh();
-            }, 210);
+            });
         }
 
         function atualizarModoMovel() {
@@ -274,9 +271,6 @@
             else document.body.classList.remove('mobile-files', 'mobile-terminal', 'mobile-editor');
         }
 
-        document.querySelectorAll('#mobile-pager button').forEach(b => {
-            b.addEventListener('click', () => trocarTelaMovel(b.dataset.tela));
-        });
         if (midiaMovel.addEventListener) midiaMovel.addEventListener('change', atualizarModoMovel);
         else midiaMovel.addListener(atualizarModoMovel);
         atualizarModoMovel();
@@ -1553,7 +1547,9 @@
             document.getElementById('deposito-telas').appendChild(tela);
 
             const term = new Terminal({
-                theme: { background: '#000' }, fontFamily: 'monospace', fontSize: 14, cursorBlink: true
+                theme: { background: '#000' }, fontFamily: 'monospace', fontSize: 14, cursorBlink: true,
+                // Uma sessão de agente passa fácil das 1000 linhas padrão.
+                scrollback: 10000
             });
             const fit = new FitAddon.FitAddon();
             term.loadAddon(fit);
@@ -1562,6 +1558,7 @@
 
             const t = { id: proximoId++, term, fit, ws: null, sessao, tentativas: 0, encerrado: false, tela };
             terminais.push(t);
+            rolagemPorToque(t);
 
             // Quem tem o teclado define o painel em foco: com dois terminais à
             // vista, clicar num deles precisa trocar o alvo do window.term.
@@ -1621,20 +1618,20 @@
             return t;
         }
 
-        // --- TECLAS EXTRAS E GESTOS DE TELEFONE ---
-        // O teclado virtual não oferece as teclas que fazem um terminal ser
-        // confortável. A faixa também serve ao editor para setas, tabulação e
-        // símbolos frequentes, mas Ctrl é propositalmente um recurso do PTY.
+        // --- TECLAS EXTRAS, COMPOSIÇÃO E ROLAGEM NO TELEFONE ---
+        // O teclado virtual não oferece as teclas que fazem um terminal (e os
+        // agentes de CLI) serem confortáveis. A faixa também serve ao editor
+        // para setas, tabulação e símbolos, mas Ctrl é um recurso do PTY.
         let ctrlMovel = false;
 
         function terminalEmFoco() {
             return terminalPor(focoTerminal) || terminaisVisiveis()[0] || null;
         }
 
-        function mandarAoTerminal(texto) {
+        function mandarAoTerminal(texto, { focar = true } = {}) {
             const t = terminalEmFoco();
             if (!t) return;
-            t.term.focus();
+            if (focar) t.term.focus();
             if (t.encerrado) {
                 t.encerrado = false;
                 conectar(t);
@@ -1653,34 +1650,127 @@
             };
             if (comandos[tecla]) editor.execCommand(comandos[tecla]);
             else if (tecla === 'Tab') editor.replaceSelection('\t');
-            else if (tecla !== 'Esc') editor.replaceSelection(tecla);
+            else if (tecla === '⏎') editor.execCommand('newlineAndIndent');
+            else if (tecla.length === 1) editor.replaceSelection(tecla);
         }
 
         async function colarMovel() {
             try {
                 const texto = await navigator.clipboard.readText();
-                if (texto) mandarAoTerminal(texto);
+                if (texto) colarNoTerminal(texto);
             } catch (_) {
-                // HTTP por IP não dá acesso ao clipboard em muitos navegadores.
-                // O campo nativo ainda permite colar pelo menu do próprio celular.
-                const texto = window.prompt('Cole o texto para enviar ao terminal:');
-                if (texto) mandarAoTerminal(texto);
+                // HTTP por IP não dá acesso ao clipboard em muitos navegadores;
+                // a caixa de composição aceita o colar do próprio celular.
+                abrirComposicao(true);
             }
+        }
+
+        // term.paste aplica o bracketed paste quando o programa o pediu: o
+        // Claude Code e o Codex recebem um texto de várias linhas como uma
+        // colagem só, em vez de cada quebra de linha virar um Enter.
+        function colarNoTerminal(texto) {
+            const t = terminalEmFoco();
+            if (!t) return;
+            if (t.encerrado) { t.encerrado = false; conectar(t); return; }
+            t.term.paste(texto);
+        }
+
+        // Rolagem do histórico, sem mandar nada ao programa. Na tela
+        // alternativa (vim, less) não há histórico, e aí PgUp/PgDn é que valem.
+        function rolarHistorico(como) {
+            const t = terminalEmFoco();
+            if (!t) return;
+            if (como === 'fim') t.term.scrollToBottom();
+            else t.term.scrollPages(como);
+        }
+
+        // --- Caixa de composição ---
+        // Escrever direto no xterm briga com o corretor e o ditado do teclado
+        // do celular (letras somem ou duplicam). Aqui o texto é composto num
+        // campo nativo e vai inteiro ao terminal, seguido de Enter.
+        const caixaCompor = document.getElementById('texto-compor');
+
+        function medirRodape() {
+            const altura = document.getElementById('mobile-keybar').offsetHeight
+                + (document.body.classList.contains('compondo')
+                    ? document.getElementById('mobile-compor').offsetHeight : 0);
+            document.body.style.setProperty('--rodape-movel', altura + 'px');
+            requestAnimationFrame(() => {
+                if (typeof ajustarVisiveis === 'function') ajustarVisiveis({ avisarShell: true });
+            });
+        }
+
+        function abrirComposicao(abrir) {
+            document.body.classList.toggle('compondo', abrir);
+            document.querySelector('#mobile-keybar [data-tecla="Texto"]')?.classList.toggle('ativo', abrir);
+            if (abrir) caixaCompor.focus();
+            medirRodape();
+        }
+
+        function crescerCaixa() {
+            caixaCompor.style.height = 'auto';
+            caixaCompor.style.height = caixaCompor.scrollHeight + 'px';
+            medirRodape();
+        }
+        caixaCompor.addEventListener('input', crescerCaixa);
+
+        function enviarComposicao() {
+            const texto = caixaCompor.value;
+            if (texto) colarNoTerminal(texto);
+            // O Enter vai à parte: colado junto, alguns TUIs o tratariam como
+            // parte do texto colado em vez de "enviar".
+            setTimeout(() => mandarAoTerminal('\r', { focar: false }), texto ? 80 : 0);
+            caixaCompor.value = '';
+            crescerCaixa();
+            caixaCompor.focus();
+        }
+        document.getElementById('btn-enviar-compor').addEventListener('click', enviarComposicao);
+
+        function soltarCtrl() {
+            ctrlMovel = false;
+            document.querySelector('[data-tecla="Ctrl"]')?.classList.remove('modificador');
         }
 
         function montarTeclasMoveis() {
             const barra = document.getElementById('mobile-keybar');
+            // [rótulo, sequência] — null marca as teclas tratadas à parte.
             const teclas = [
-                ['Esc', '\x1b'], ['Ctrl', null], ['Tab', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'],
-                ['←', '\x1b[D'], ['→', '\x1b[C'], ['Pg↑', '\x1b[5~'], ['Pg↓', '\x1b[6~'],
-                ['Home', '\x1b[H'], ['End', '\x1b[F'], ['|', '|'], ['/', '/'], ['-', '-'], ['~', '~'],
-                ['C', 'c'], ['D', 'd'], ['Z', 'z'], ['Colar', null]
+                ['📁', null], ['📝', null], ['Texto', null], ['|'],
+                ['Esc', '\x1b'], ['^C', '\x03'], ['Ctrl', null], ['Tab', '\t'], ['⇧Tab', '\x1b[Z'],
+                ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C'], ['⏎', '\r'], ['|'],
+                ['Rol↑', null], ['Rol↓', null], ['⤓', null], ['|'],
+                ['Pg↑', '\x1b[5~'], ['Pg↓', '\x1b[6~'], ['Home', '\x1b[H'], ['End', '\x1b[F'],
+                ['/', '/'], ['-', '-'], ['~', '~'], ['C', 'c'], ['D', 'd'], ['Z', 'z'], ['Colar', null]
             ];
+            const telas = { '📁': 'files', '📝': 'editor' };
+            const rolagens = { 'Rol↑': -1, 'Rol↓': 1, '⤓': 'fim' };
             teclas.forEach(([rotulo, valor]) => {
+                if (valor === undefined) {
+                    const sep = document.createElement('span');
+                    sep.className = 'separador';
+                    barra.appendChild(sep);
+                    return;
+                }
                 const b = document.createElement('button');
                 b.textContent = rotulo;
                 b.dataset.tecla = rotulo;
+                if (telas[rotulo]) {
+                    b.dataset.tela = telas[rotulo];
+                    b.title = rotulo === '📁' ? 'Arquivos' : 'Editor';
+                }
+                // Não roubar o foco: tocar numa tecla da faixa não pode fechar
+                // o teclado do celular nem tirar o cursor da caixa de texto.
+                b.addEventListener('pointerdown', e => e.preventDefault());
                 b.addEventListener('click', () => {
+                    if (telas[rotulo]) {
+                        trocarTelaMovel(telaMovel === telas[rotulo] ? 'terminal' : telas[rotulo]);
+                        return;
+                    }
+                    if (rotulo === 'Texto') {
+                        abrirComposicao(!document.body.classList.contains('compondo'));
+                        return;
+                    }
+                    if (rotulo in rolagens) { rolarHistorico(rolagens[rotulo]); return; }
                     if (rotulo === 'Ctrl') {
                         ctrlMovel = !ctrlMovel;
                         b.classList.toggle('modificador', ctrlMovel);
@@ -1689,57 +1779,106 @@
                     if (rotulo === 'Colar') { colarMovel(); return; }
                     if (telaMovel === 'editor') {
                         teclaNoEditor(rotulo);
-                        ctrlMovel = false;
-                        document.querySelector('[data-tecla="Ctrl"]')?.classList.remove('modificador');
+                        soltarCtrl();
                         return;
                     }
                     let envio = valor;
                     if (ctrlMovel && valor && valor.length === 1) {
                         envio = String.fromCharCode(valor.toUpperCase().charCodeAt(0) & 31);
                     }
-                    ctrlMovel = false;
-                    document.querySelector('[data-tecla="Ctrl"]')?.classList.remove('modificador');
-                    mandarAoTerminal(envio);
+                    soltarCtrl();
+                    // Com a caixa de composição aberta, o teclado fica nela.
+                    mandarAoTerminal(envio, { focar: !document.body.classList.contains('compondo') });
                 });
                 barra.appendChild(b);
             });
         }
         montarTeclasMoveis();
 
+        // Arrastar o dedo na vertical rola o histórico do terminal. O toque
+        // nativo do xterm no celular é instável (às vezes nem rola, às vezes
+        // o navegador puxa a página), então o arrasto é convertido em linhas
+        // aqui, com inércia ao soltar. Um toque sem arrasto segue para o
+        // xterm normalmente e abre o teclado.
+        function rolagemPorToque(t) {
+            let inicio = null, sobra = 0, ultimoY = 0, ultimoT = 0, velocidade = 0, inercia = null;
+
+            function alturaLinha() {
+                const tela = t.tela.querySelector('.xterm-screen');
+                return tela && t.term.rows ? tela.clientHeight / t.term.rows : 17;
+            }
+            function rolar(px) {
+                sobra += px;
+                const linhas = Math.trunc(sobra / alturaLinha());
+                if (linhas) {
+                    t.term.scrollLines(-linhas);
+                    sobra -= linhas * alturaLinha();
+                }
+            }
+
+            t.tela.addEventListener('touchstart', e => {
+                if (!estaNoMovel() || e.touches.length !== 1) { inicio = null; return; }
+                cancelAnimationFrame(inercia);
+                const y = e.touches[0].clientY;
+                inicio = { x: e.touches[0].clientX, y, arrastando: false };
+                ultimoY = y; ultimoT = performance.now(); velocidade = 0; sobra = 0;
+            }, { passive: true, capture: true });
+
+            t.tela.addEventListener('touchmove', e => {
+                if (!inicio) return;
+                // Na tela alternativa não há histórico: o arrasto fica com o xterm.
+                if (t.term.buffer.active.type === 'alternate') { inicio = null; return; }
+                const toque = e.touches[0];
+                if (!inicio.arrastando) {
+                    const dy = toque.clientY - inicio.y, dx = toque.clientX - inicio.x;
+                    if (Math.abs(dy) < 8 || Math.abs(dy) < Math.abs(dx)) return;
+                    inicio.arrastando = true;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                const agora = performance.now();
+                const passo = toque.clientY - ultimoY;
+                velocidade = passo / Math.max(1, agora - ultimoT);
+                ultimoY = toque.clientY; ultimoT = agora;
+                rolar(passo);
+            }, { passive: false, capture: true });
+
+            t.tela.addEventListener('touchend', e => {
+                if (!inicio) return;
+                const arrastou = inicio.arrastando;
+                inicio = null;
+                if (!arrastou) return;
+                // Sem isto o fim do arrasto vira um "toque" e abre o teclado.
+                e.preventDefault();
+                e.stopPropagation();
+                let v = velocidade * 16;
+                const passo = () => {
+                    if (Math.abs(v) < 0.5) return;
+                    rolar(v);
+                    v *= 0.95;
+                    inercia = requestAnimationFrame(passo);
+                };
+                passo();
+            }, { passive: false, capture: true });
+        }
+
         function ajustarTecladoVirtual() {
             if (!estaNoMovel() || !window.visualViewport) return;
             const vv = window.visualViewport;
-            const coberto = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+            const coberto = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+            const antes = document.body.style.getPropertyValue('--teclado-virtual');
             document.body.style.setProperty('--teclado-virtual', coberto + 'px');
+            // Navegadores que não encolhem a página para o teclado (o
+            // interactive-widget da viewport resolve isso no Chrome) deixariam
+            // a linha do prompt escondida atrás dele: o terminal encolhe aqui.
+            if (antes !== coberto + 'px' && typeof ajustarVisiveis === 'function') {
+                requestAnimationFrame(() => ajustarVisiveis({ avisarShell: true }));
+            }
         }
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', ajustarTecladoVirtual);
             window.visualViewport.addEventListener('scroll', ajustarTecladoVirtual);
         }
-
-        let gestoMovel = null;
-        document.addEventListener('pointerdown', e => {
-            if (!estaNoMovel() || e.pointerType !== 'touch') return;
-            // Começar exatamente na borda aciona o "voltar" do navegador em
-            // vários celulares. A faixa logo DEPOIS dela conserva esse gesto
-            // do sistema e ainda dá uma alça confiável para trocar de tela.
-            const dentroDaAlca = (e.clientX >= 20 && e.clientX <= 76)
-                || (e.clientX >= window.innerWidth - 76 && e.clientX <= window.innerWidth - 20);
-            if (!dentroDaAlca) return;
-            gestoMovel = { x: e.clientX, y: e.clientY, id: e.pointerId };
-        }, { passive: true });
-        document.addEventListener('pointerup', e => {
-            if (!gestoMovel || gestoMovel.id !== e.pointerId) return;
-            const dx = e.clientX - gestoMovel.x;
-            const dy = e.clientY - gestoMovel.y;
-            gestoMovel = null;
-            if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-            const telas = ['files', 'terminal', 'editor'];
-            const atual = telas.indexOf(telaMovel);
-            const proxima = telas[atual + (dx < 0 ? 1 : -1)];
-            if (proxima) trocarTelaMovel(proxima);
-        }, { passive: true });
-        document.addEventListener('pointercancel', () => { gestoMovel = null; }, { passive: true });
 
         // Os tamanhos entram antes de qualquer terminal existir: assim o
         // primeiro fit() já mede a caixa definitiva, sem precisar de correção.
